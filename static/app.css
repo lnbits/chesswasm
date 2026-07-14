@@ -1,0 +1,429 @@
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+body {
+  background: #111318;
+  color: white;
+  letter-spacing: 0;
+}
+
+[v-cloak],
+[hidden] {
+  display: none !important;
+}
+
+.shell {
+  margin: 0 auto;
+  max-width: 1180px;
+}
+
+.chess-mark {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: #20242c;
+  color: #f7d365;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.panel {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #181b22;
+}
+
+.game-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(280px, 380px);
+  gap: 16px;
+  align-items: start;
+}
+
+.game-topline {
+  display: flex;
+  gap: 12px;
+  align-items: start;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.chess-board {
+  display: grid;
+  width: min(100%, 680px);
+  aspect-ratio: 1;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-rows: repeat(8, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  touch-action: none;
+  user-select: none;
+}
+
+.board-square {
+  display: grid;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  place-items: center;
+  border: 0;
+  cursor: pointer;
+  font-family: "DejaVu Sans", "Segoe UI Symbol", sans-serif;
+  font-size: clamp(26px, 8vw, 58px);
+  line-height: 1;
+  padding: 0;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.board-square.movable {
+  cursor: grab;
+}
+
+.board-square.movable:active {
+  cursor: grabbing;
+}
+
+.board-square.dragging-source {
+  color: transparent;
+  text-shadow: none;
+}
+
+.piece-drag-ghost {
+  position: fixed;
+  z-index: 2000;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  font-family: "DejaVu Sans", "Segoe UI Symbol", sans-serif;
+  font-size: clamp(38px, 7vw, 64px);
+  line-height: 1;
+  will-change: transform;
+}
+
+.board-square.piece-white {
+  color: #fff8e8;
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.55),
+    0 0 1px rgba(0, 0, 0, 0.85);
+}
+
+.board-square.piece-black {
+  color: #14171a;
+  text-shadow:
+    0 1px 1px rgba(255, 255, 255, 0.2),
+    0 0 1px rgba(255, 255, 255, 0.35);
+}
+
+.piece-drag-ghost.piece-white {
+  color: #fff8e8;
+  text-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.55),
+    0 0 1px rgba(0, 0, 0, 0.85);
+}
+
+.piece-drag-ghost.piece-black {
+  color: #14171a;
+  text-shadow:
+    0 1px 1px rgba(255, 255, 255, 0.2),
+    0 0 1px rgba(255, 255, 255, 0.35);
+}
+
+.board-square.light {
+  background: #d8caa3;
+}
+
+.board-square.dark {
+  background: #5b6f72;
+}
+
+.board-square.selected {
+  box-shadow: inset 0 0 0 4px #f7d365;
+}
+
+.board-square.legal-target::after {
+  content: "";
+  position: absolute;
+  width: 26%;
+  height: 26%;
+  border-radius: 999px;
+  background: rgba(83, 112, 74, 0.74);
+  pointer-events: none;
+}
+
+.board-square.legal-capture::after {
+  inset: 10%;
+  width: auto;
+  height: auto;
+  border: 5px solid rgba(83, 112, 74, 0.72);
+  background: transparent;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.stat-item {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.player-list,
+.move-list {
+  display: grid;
+  gap: 8px;
+}
+
+.player-row,
+.move-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.move-row {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.form {
+  display: grid;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.form input {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 4px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.08);
+  color: white;
+  outline: none;
+}
+
+.form input:focus {
+  border-color: var(--q-primary);
+}
+
+button.q-btn {
+  min-height: 40px;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  padding: 8px 16px;
+}
+
+button.q-btn:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.subtle-button,
+.invoice-copy-button {
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+}
+
+.danger-button {
+  background: rgba(198, 40, 40, 0.88);
+  color: white;
+}
+
+.button-spinner {
+  display: none;
+  width: 18px;
+  height: 18px;
+  margin-right: 8px;
+  border: 2px solid rgba(255, 255, 255, 0.38);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: chess-spin 0.75s linear infinite;
+  vertical-align: -4px;
+}
+
+button[aria-busy='true'] .button-spinner {
+  display: inline-block;
+}
+
+.muted {
+  color: #bdbdbd;
+}
+
+.invoice-dialog {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.invoice-dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  border: 0;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.invoice-dialog-card {
+  position: relative;
+  z-index: 2;
+  width: min(100%, 380px);
+}
+
+.invoice-close-button {
+  min-height: 32px;
+  background: transparent;
+}
+
+.invoice-qrcode {
+  display: grid;
+  min-height: 280px;
+  place-items: center;
+  border-radius: 4px;
+  background: white;
+  padding: 10px;
+}
+
+.invoice-qrcode svg {
+  display: block;
+  width: min(100%, 260px);
+  height: auto;
+}
+
+.invoice-status {
+  min-height: 24px;
+  text-align: center;
+}
+
+.confetti-layer {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  z-index: 3;
+}
+
+.confetti-piece {
+  position: absolute;
+  top: -16px;
+  width: 8px;
+  height: 14px;
+  background: #f7d365;
+  opacity: 0;
+  animation: chess-confetti 1.4s ease-out forwards;
+}
+
+.confetti-piece:nth-child(3n) {
+  background: #26a69a;
+}
+
+.confetti-piece:nth-child(4n) {
+  background: #ffffff;
+}
+
+.confetti-piece:nth-child(5n) {
+  width: 10px;
+  height: 10px;
+}
+
+@keyframes chess-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes chess-confetti {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -20px, 0) rotate(0deg);
+  }
+
+  12% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--x, 0), 100vh, 0) rotate(540deg);
+  }
+}
+
+@media (max-width: 880px) {
+  .game-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .chess-board {
+    width: 100%;
+  }
+}
+
+.confetti-piece-1 { left: 5%; --x: 20px; animation-delay: 0.02s; }
+.confetti-piece-2 { left: 9%; --x: -10px; animation-delay: 0.08s; }
+.confetti-piece-3 { left: 13%; --x: 26px; animation-delay: 0.14s; }
+.confetti-piece-4 { left: 18%; --x: -22px; animation-delay: 0.2s; }
+.confetti-piece-5 { left: 22%; --x: 14px; animation-delay: 0.04s; }
+.confetti-piece-6 { left: 27%; --x: -34px; animation-delay: 0.11s; }
+.confetti-piece-7 { left: 31%; --x: 18px; animation-delay: 0.18s; }
+.confetti-piece-8 { left: 35%; --x: -16px; animation-delay: 0.25s; }
+.confetti-piece-9 { left: 39%; --x: 34px; animation-delay: 0.06s; }
+.confetti-piece-10 { left: 43%; --x: -28px; animation-delay: 0.13s; }
+.confetti-piece-11 { left: 47%; --x: 22px; animation-delay: 0.19s; }
+.confetti-piece-12 { left: 51%; --x: -12px; animation-delay: 0.27s; }
+.confetti-piece-13 { left: 55%; --x: 38px; animation-delay: 0.05s; }
+.confetti-piece-14 { left: 59%; --x: -26px; animation-delay: 0.1s; }
+.confetti-piece-15 { left: 63%; --x: 16px; animation-delay: 0.16s; }
+.confetti-piece-16 { left: 67%; --x: -36px; animation-delay: 0.22s; }
+.confetti-piece-17 { left: 71%; --x: 20px; animation-delay: 0.03s; }
+.confetti-piece-18 { left: 75%; --x: -18px; animation-delay: 0.09s; }
+.confetti-piece-19 { left: 79%; --x: 28px; animation-delay: 0.15s; }
+.confetti-piece-20 { left: 83%; --x: -24px; animation-delay: 0.21s; }
+.confetti-piece-21 { left: 87%; --x: 12px; animation-delay: 0.07s; }
+.confetti-piece-22 { left: 91%; --x: -30px; animation-delay: 0.12s; }
+.confetti-piece-23 { left: 95%; --x: 18px; animation-delay: 0.17s; }
+.confetti-piece-24 { left: 3%; --x: -14px; animation-delay: 0.23s; }
+.confetti-piece-25 { left: 16%; --x: 32px; animation-delay: 0.01s; }
+.confetti-piece-26 { left: 29%; --x: -20px; animation-delay: 0.24s; }
+.confetti-piece-27 { left: 42%; --x: 24px; animation-delay: 0.18s; }
+.confetti-piece-28 { left: 58%; --x: -32px; animation-delay: 0.11s; }
+.confetti-piece-29 { left: 69%; --x: 30px; animation-delay: 0.2s; }
+.confetti-piece-30 { left: 82%; --x: -18px; animation-delay: 0.14s; }
+.confetti-piece-31 { left: 93%; --x: 22px; animation-delay: 0.26s; }
+.confetti-piece-32 { left: 49%; --x: -22px; animation-delay: 0.06s; }

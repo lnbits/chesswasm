@@ -1,0 +1,158 @@
+{
+  "id": "chesswasm",
+  "name": "Chess",
+  "short_description": "Create paid public chess games where the winner takes the pot.",
+  "version": "0.0.1",
+  "min_lnbits_version": "1.5.5",
+  "tags": ["gaming", "chess", "wasm"],
+  "extension_type": "wasm",
+  "wasm": {
+    "module": "wasm/module.wasm",
+    "world": "chesswasm",
+    "exports": [
+      {"name": "get-chess-settings", "visibility": "authenticated"},
+      {"name": "save-chess-settings", "visibility": "authenticated"},
+      {"name": "list-chess-wallets", "visibility": "authenticated"},
+      {"name": "create-chess-game", "visibility": "authenticated"},
+      {"name": "list-chess-games", "visibility": "authenticated"},
+      {"name": "get-public-chess-game", "visibility": "public"},
+      {"name": "join-chess-game", "visibility": "public"},
+      {"name": "make-chess-move", "visibility": "public"},
+      {"name": "resign-chess-game", "visibility": "public"},
+      {"name": "settle-chess-game", "visibility": "authenticated"},
+      {"name": "record-chess-payment", "visibility": "event"}
+    ]
+  },
+  "events": {
+    "onInvoicePaid": "record-chess-payment"
+  },
+  "ui_routes": [
+    {
+      "path": "/chesswasm",
+      "entrypoint": "ui/admin.html",
+      "auth": "user"
+    },
+    {
+      "path": "/chesswasm/games/{game_id}",
+      "entrypoint": "ui/public.html",
+      "auth": "public",
+      "path_params": {
+        "game_id": "gameId"
+      }
+    }
+  ],
+  "api_routes": [
+    {"method": "GET", "path": "/settings", "export": "get-chess-settings", "auth": "user"},
+    {"method": "PUT", "path": "/settings", "export": "save-chess-settings", "auth": "user"},
+    {"method": "GET", "path": "/wallets", "export": "list-chess-wallets", "auth": "user"},
+    {"method": "POST", "path": "/games", "export": "create-chess-game", "auth": "user"},
+    {"method": "GET", "path": "/games", "export": "list-chess-games", "auth": "user"},
+    {
+      "method": "GET",
+      "path": "/games/{game_id}",
+      "export": "get-public-chess-game",
+      "auth": "public",
+      "path_params": {
+        "game_id": "gameId"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/games/{game_id}/join",
+      "export": "join-chess-game",
+      "auth": "public",
+      "path_params": {
+        "game_id": "gameId"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/games/{game_id}/move",
+      "export": "make-chess-move",
+      "auth": "public",
+      "path_params": {
+        "game_id": "gameId"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/games/{game_id}/resign",
+      "export": "resign-chess-game",
+      "auth": "public",
+      "path_params": {
+        "game_id": "gameId"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/games/{game_id}/settle",
+      "export": "settle-chess-game",
+      "auth": "user",
+      "path_params": {
+        "game_id": "gameId"
+      }
+    }
+  ],
+  "permissions": [
+    {
+      "id": "ext.storage.read",
+      "description": "Read chess settings, games, player records, and moves."
+    },
+    {
+      "id": "ext.storage.read_public",
+      "description": "Read public chess game fields.",
+      "policies": [
+        {
+          "table_name": "chess_games",
+          "public_fields": [
+            "id",
+            "settings_id",
+            "name",
+            "join_amount",
+            "haircut",
+            "players_count",
+            "status",
+            "white_ln_address",
+            "black_ln_address",
+            "white_payment_hash",
+            "black_payment_hash",
+            "winner_color",
+            "winner_ln_address",
+            "payout_pending",
+            "payout_status",
+            "fen",
+            "pgn",
+            "turn",
+            "move_count",
+            "created_at",
+            "updated_at",
+            "started_at",
+            "completed_at"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ext.storage.write",
+      "description": "Write chess settings, games, player records, moves, and payment state."
+    },
+    {
+      "id": "wallet.list",
+      "description": "Show the installing user's wallets for chess receipts."
+    },
+    {
+      "id": "wallet.create_invoice_public",
+      "description": "Create public join invoices for configured chess wallets.",
+      "policies": [
+        {
+          "table": "chess_settings",
+          "wallet_field": "wallet_id"
+        }
+      ]
+    },
+    {
+      "id": "wallet.pay_invoice",
+      "description": "Pay chess winner payouts to Lightning addresses."
+    }
+  ]
+}
