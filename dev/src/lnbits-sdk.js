@@ -7,12 +7,15 @@ import {
   log,
   now,
   payInvoice,
+  payLnurl,
   randomId,
   storageDelete,
   storageGet,
   storageGetPublic,
   storageGetPaginated,
-  storageSet
+  storageGetPublicPaginated,
+  storageSet,
+  websocketPublish
 } from 'lnbits:extension/host'
 import {
   convert as utilsCurrenciesConvert,
@@ -63,6 +66,20 @@ export const extensionApi = {
       })
     },
 
+    getPublicPaginated(input) {
+      return storageGetPublicPaginated({
+        table: input.table,
+        sourceId: input.sourceId || '',
+        filtersJson: JSON.stringify(input.filters || {}),
+        search: input.search || '',
+        searchFields: input.searchFields || [],
+        sortBy: input.sortBy || '',
+        descending: input.descending === true,
+        limit: input.limit || 25,
+        offset: input.offset || 0
+      })
+    },
+
     delete(input) {
       return storageDelete(input)
     }
@@ -102,6 +119,22 @@ export const extensionApi = {
         walletId: input.walletId,
         paymentRequest: input.paymentRequest,
         maxSat: input.maxSat ?? undefined,
+        description: input.description || '',
+        extra: Object.entries(input.extra || {}).map(([key, value]) => [
+          key,
+          String(value)
+        ])
+      })
+    },
+
+    payLnurl(input) {
+      return payLnurl({
+        walletId: input.walletId,
+        lnurl: input.lnurl,
+        amount: Number(input.amount),
+        currency: input.currency || 'sat',
+        comment: input.comment || undefined,
+        maxSat: input.maxSat > 0 ? BigInt(input.maxSat) : undefined,
         description: input.description || '',
         extra: Object.entries(input.extra || {}).map(([key, value]) => [
           key,
@@ -224,6 +257,15 @@ export const extensionApi = {
   }
 }
 
+export const websocket = {
+  publish(itemId, data) {
+    return websocketPublish({
+      itemId,
+      dataJson: JSON.stringify(data || {})
+    }).sent
+  }
+}
+
 export const storage = {
   get(table, id, fallback = null) {
     const {dataJson} = extensionApi.storage.get({table, id})
@@ -245,6 +287,24 @@ export const storage = {
   getPaginated(table, options = {}) {
     const {rowsJson, total} = extensionApi.storage.getPaginated({
       table,
+      filters: options.filters || {},
+      search: options.search || '',
+      searchFields: options.searchFields || [],
+      sortBy: options.sortBy || '',
+      descending: options.descending === true,
+      limit: options.limit || 25,
+      offset: options.offset || 0
+    })
+    return {
+      data: JSON.parse(rowsJson || '[]'),
+      total: Number(total || 0)
+    }
+  },
+
+  getPublicPaginated(table, options = {}) {
+    const {rowsJson, total} = extensionApi.storage.getPublicPaginated({
+      table,
+      sourceId: options.sourceId || '',
       filters: options.filters || {},
       search: options.search || '',
       searchFields: options.searchFields || [],
@@ -299,6 +359,19 @@ export const wallet = {
     return extensionApi.wallet.payInvoice({
       walletId,
       paymentRequest,
+      maxSat,
+      description,
+      extra
+    })
+  },
+
+  payLnurl({walletId, lnurl, amount, currency = 'sat', comment = '', maxSat = 0, description = '', extra = {}}) {
+    return extensionApi.wallet.payLnurl({
+      walletId,
+      lnurl,
+      amount,
+      currency,
+      comment,
       maxSat,
       description,
       extra

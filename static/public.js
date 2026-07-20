@@ -9,8 +9,13 @@ const state = {
   suppressClick: false,
   legalTargets: new Map(),
   invoiceUnsubscribe: null,
+  invoicePollTimer: null,
   qrApp: null,
-  pollTimer: null
+  pollTimer: null,
+  websocket: null,
+  refreshTimer: null,
+  rendering: false,
+  renderAgain: false
 }
 
 const client = window.createLNbitsExtensionClient({
@@ -46,6 +51,7 @@ joinButton.addEventListener('click', async event => {
     })
     savePlayerToken(invoice.paymentHash)
     openInvoiceDialog(invoice)
+    startInvoicePolling(invoice.paymentHash)
     await subscribeToPayment(invoice.paymentHash)
   } catch (error) {
     showError(error)
@@ -66,7 +72,12 @@ copyInvoiceButton.addEventListener('click', async () => {
 
 resignButton.addEventListener('click', async () => {
   if (!state.gameId || !playerToken()) return
-  if (!window.confirm('Resign this game?')) return
+  const confirmed = await confirmAction({
+    title: 'Resign Game',
+    message: 'Resign this game? Your opponent will be marked as the winner.',
+    okLabel: 'Resign'
+  })
+  if (!confirmed) return
   try {
     await client.resign(state.gameId, {playerToken: playerToken()})
     await renderGame()
@@ -94,6 +105,12 @@ async function init() {
 }
 
 async function renderGame() {
+  if (state.rendering) {
+    state.renderAgain = true
+    return
+  }
+  state.rendering = true
+  try {
   if (!state.gameId) {
     gameTitle.textContent = 'No game selected'
     gameStatus.textContent = 'Open a valid chess game link.'
@@ -117,10 +134,46 @@ async function renderGame() {
   renderBoard(game.fen, state.player?.color || '')
   renderPlayers(response.players || [], state.player)
   renderMoves(response.moves || [])
+  await ensureRealtime()
 
   if (game.status === 'completed' || game.status === 'draw') {
     window.clearInterval(state.pollTimer)
   }
+  } finally {
+    state.rendering = false
+    if (state.renderAgain) {
+      state.renderAgain = false
+      queueRenderGame()
+    }
+  }
+}
+
+async function ensureRealtime() {
+  if (!state.gameId || state.websocket) return
+  try {
+    state.websocket = await client.subscribeWebsocket(`game:${state.gameId}`, event => {
+      if (event.event === 'websocket.error') {
+        state.websocket = null
+        queueRenderGame()
+        return
+      }
+      const data = event.data || {}
+      if (data.type !== 'server') return
+      queueRenderGame()
+      if (data.event === 'move') return
+      if (data.event === 'resigned' || data.event === 'settled') showConfetti()
+    })
+  } catch (error) {
+    console.warn('[chesswasm public] websocket subscribe failed', error)
+  }
+}
+
+function queueRenderGame(delay = 40) {
+  if (state.refreshTimer) return
+  state.refreshTimer = window.setTimeout(() => {
+    state.refreshTimer = null
+    renderGame().catch(showError)
+  }, delay)
 }
 
 function renderBoard(fen, playerColor) {
@@ -372,6 +425,7 @@ function openInvoiceDialog(invoice) {
 function closeInvoiceDialog() {
   invoiceDialog.hidden = true
   cleanupPaymentSubscription()
+  cleanupInvoicePolling()
   if (state.qrApp) {
     state.qrApp.unmount()
     state.qrApp = null
@@ -402,20 +456,25 @@ function renderQrCode(value) {
 
 async function subscribeToPayment(paymentHash) {
   cleanupPaymentSubscription()
-  state.invoiceUnsubscribe = await client.subscribePayment(paymentHash, event => {
-    if (event.event === 'payment.error') {
-      invoiceStatus.textContent = 'Payment listener disconnected'
-      return
-    }
-    const payment = event.data || {}
-    if (
-      event.event === 'payment.settled' ||
-      payment.pending === false ||
-      ['success', 'settled', 'paid'].includes(String(payment.status || ''))
-    ) {
-      handleInvoicePaid()
-    }
-  })
+  try {
+    state.invoiceUnsubscribe = await client.subscribePayment(paymentHash, event => {
+      if (event.event === 'payment.error') {
+        invoiceStatus.textContent = 'Checking payment status'
+        return
+      }
+      const payment = event.data || {}
+      if (
+        event.event === 'payment.settled' ||
+        payment.pending === false ||
+        ['success', 'settled', 'paid'].includes(String(payment.status || ''))
+      ) {
+        handleInvoicePaid()
+      }
+    })
+  } catch (error) {
+    console.warn('[chesswasm public] payment subscription unavailable', error)
+    invoiceStatus.textContent = 'Checking payment status'
+  }
 }
 
 function cleanupPaymentSubscription() {
@@ -424,8 +483,29 @@ function cleanupPaymentSubscription() {
   state.invoiceUnsubscribe = null
 }
 
+function startInvoicePolling(paymentHash) {
+  cleanupInvoicePolling()
+  state.invoicePollTimer = window.setInterval(async () => {
+    try {
+      const response = await client.getPublicGame(state.gameId, paymentHash)
+      if (response?.player?.status === 'paid') {
+        handleInvoicePaid()
+      }
+    } catch (error) {
+      console.warn('[chesswasm public] invoice poll failed', error)
+    }
+  }, 2000)
+}
+
+function cleanupInvoicePolling() {
+  if (!state.invoicePollTimer) return
+  window.clearInterval(state.invoicePollTimer)
+  state.invoicePollTimer = null
+}
+
 function handleInvoicePaid() {
   cleanupPaymentSubscription()
+  cleanupInvoicePolling()
   invoiceStatus.textContent = 'Payment received'
   invoiceStatus.classList.add('text-positive')
   showConfetti()
@@ -755,6 +835,58 @@ async function copyText(value, successMessage, failureMessage) {
   }
 }
 
+function confirmAction({title, message, okLabel = 'OK'}) {
+  return new Promise(resolve => {
+    const dialog = document.createElement('div')
+    dialog.className = 'confirm-dialog'
+    dialog.setAttribute('role', 'dialog')
+    dialog.setAttribute('aria-modal', 'true')
+
+    const backdrop = document.createElement('button')
+    backdrop.type = 'button'
+    backdrop.className = 'confirm-dialog-backdrop'
+    backdrop.setAttribute('aria-label', 'Cancel')
+
+    const card = document.createElement('div')
+    card.className = 'confirm-dialog-card panel q-card q-card--dark q-pa-md'
+
+    const heading = document.createElement('h2')
+    heading.className = 'text-h6 text-weight-bold q-my-none'
+    heading.textContent = title
+
+    const body = document.createElement('p')
+    body.className = 'muted q-mt-sm'
+    body.textContent = message
+
+    const actions = document.createElement('div')
+    actions.className = 'row justify-end q-gutter-sm q-mt-md'
+
+    const cancel = document.createElement('button')
+    cancel.type = 'button'
+    cancel.className = 'q-btn subtle-button'
+    cancel.textContent = 'Cancel'
+
+    const ok = document.createElement('button')
+    ok.type = 'button'
+    ok.className = 'q-btn danger-button'
+    ok.textContent = okLabel
+
+    const close = result => {
+      dialog.remove()
+      resolve(result)
+    }
+
+    backdrop.addEventListener('click', () => close(false))
+    cancel.addEventListener('click', () => close(false))
+    ok.addEventListener('click', () => close(true))
+    actions.append(cancel, ok)
+    card.append(heading, body, actions)
+    dialog.append(backdrop, card)
+    document.body.append(dialog)
+    cancel.focus()
+  })
+}
+
 function setJoinLoading(loading) {
   joinButton.disabled = loading
   joinButton.setAttribute('aria-busy', loading ? 'true' : 'false')
@@ -762,5 +894,10 @@ function setJoinLoading(loading) {
 
 function cleanup() {
   cleanupPaymentSubscription()
+  cleanupInvoicePolling()
+  if (state.refreshTimer) window.clearTimeout(state.refreshTimer)
+  state.refreshTimer = null
+  state.websocket?.unsubscribe?.()
+  state.websocket = null
   window.clearInterval(state.pollTimer)
 }

@@ -293,7 +293,24 @@ button[aria-busy='true'] .button-spinner {
   padding: 18px;
 }
 
+.confirm-dialog {
+  position: fixed;
+  z-index: 1100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
 .invoice-dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  border: 0;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.confirm-dialog-backdrop {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -305,6 +322,12 @@ button[aria-busy='true'] .button-spinner {
   position: relative;
   z-index: 2;
   width: min(100%, 380px);
+}
+
+.confirm-dialog-card {
+  position: relative;
+  z-index: 2;
+  width: min(100%, 420px);
 }
 
 .invoice-close-button {

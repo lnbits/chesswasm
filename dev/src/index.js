@@ -1,4 +1,4 @@
-import {storage, system, wallet} from './lnbits-sdk.js'
+import {storage, system, wallet, websocket} from './lnbits-sdk.js'
 
 const SETTINGS_TABLE = 'chess_settings'
 const GAMES_TABLE = 'chess_games'
@@ -108,6 +108,27 @@ export function listChessGames(requestJson) {
   })
 }
 
+export function deleteChessGame(requestJson) {
+  return runJson(() => {
+    const request = parseJsonObject(requestJson)
+    const gameId = requiredText(request.gameId, 'gameId', 128)
+    const game = getGame(gameId)
+    if (game.status === 'completed' && game.payout_pending === true) {
+      throw new Error('Settle the pending payout before deleting this chess game.')
+    }
+
+    const moveCount = Number(game.move_count || 0)
+    for (let moveNumber = 1; moveNumber <= moveCount; moveNumber += 1) {
+      storage.delete(MOVES_TABLE, `${gameId}-${moveNumber}`)
+    }
+    if (game.white_payment_hash) storage.delete(PLAYERS_TABLE, game.white_payment_hash)
+    if (game.black_payment_hash) storage.delete(PLAYERS_TABLE, game.black_payment_hash)
+    storage.delete(GAMES_TABLE, gameId)
+    system.log(`chesswasm: deleted game ${gameId}`)
+    return {deleted: true, gameId}
+  })
+}
+
 export function getPublicChessGame(requestJson) {
   return runJson(() => {
     const request = parseJsonObject(requestJson)
@@ -117,7 +138,7 @@ export function getPublicChessGame(requestJson) {
     return {
       game: publicGame(game),
       players: publicPlayersFromGame(game),
-      moves: publicMovesFromGame(game),
+      moves: publicMovesForGame(game),
       player: player ? publicPlayer(player, true) : null,
       canJoin: game.status === 'waiting' && Number(game.players_count || 0) < 2
     }
@@ -199,6 +220,7 @@ export function recordChessPayment(eventJson) {
       updated_at: now
     }
     storage.set(GAMES_TABLE, updatedGame)
+    publishGame(updatedGame, 'player-paid')
     return {game: publicGame(updatedGame), player: publicPlayer(player, true), status: 'paid'}
   })
 }
@@ -249,6 +271,7 @@ export function makeChessMove(requestJson) {
       fen: move.fen,
       created_at: now
     })
+    publishGame(updatedGame, 'move')
     return {
       game: publicGame(updatedGame),
       move: publicMove(storage.get(MOVES_TABLE, `${gameId}-${moveNumber}`, null)),
@@ -281,6 +304,7 @@ export function resignChessGame(requestJson) {
       completed_at: now
     }
     storage.set(GAMES_TABLE, updatedGame)
+    publishGame(updatedGame, 'resigned')
     return {game: publicGame(updatedGame), player: publicPlayer(player, true), payout: {ok: true, pending: true}}
   })
 }
@@ -309,8 +333,21 @@ export function settleChessGame(requestJson) {
       updated_at: system.now()
     }
     storage.set(GAMES_TABLE, updatedGame)
+    publishGame(updatedGame, 'settled')
     return {game: publicGame(updatedGame), payout}
   })
+}
+
+function publishGame(game, event) {
+  try {
+    websocket.publish(`game:${game.id}`, {
+      type: 'server',
+      event,
+      game: publicGame(game)
+    })
+  } catch (error) {
+    system.log(`chesswasm websocket publish failed: ${errorMessage(error)}`, 'warning')
+  }
 }
 
 function runJson(fn) {
@@ -320,6 +357,10 @@ function runJson(fn) {
     const message = error instanceof Error ? error.message : String(error)
     return JSON.stringify({ok: false, error: message})
   }
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function parseJsonObject(value) {
@@ -426,17 +467,25 @@ function publicPlayersFromGame(game) {
   return players
 }
 
-function publicMovesForGame(gameId) {
-  return storage.getPaginated(MOVES_TABLE, {
-    filters: {game_id: gameId},
-    sortBy: 'move_number',
-    descending: false,
-    limit: 500,
-    offset: 0
-  }).data.map(publicMove)
+function publicMovesForGame(game) {
+  const gameId = game.id
+  if (Number(game.move_count || 0) <= 0) return []
+  try {
+    return storage.getPublicPaginated(MOVES_TABLE, {
+      sourceId: gameId,
+      filters: {game_id: gameId},
+      sortBy: 'move_number',
+      descending: false,
+      limit: 500,
+      offset: 0
+    }).data.map(publicMove)
+  } catch (error) {
+    system.log(`chesswasm public moves fallback: ${errorMessage(error)}`, 'warning')
+    return publicMovesFromPgn(game)
+  }
 }
 
-function publicMovesFromGame(game) {
+function publicMovesFromPgn(game) {
   const tokens = cleanText(game.pgn || '', 4000)
     .split(/\s+/)
     .filter(token => token && !/^\d+\.$/.test(token))
@@ -509,9 +558,12 @@ function payWinner({walletId, lnAddress, maxSat, description, gameId, color}) {
   if (!Number.isInteger(maxSat) || maxSat <= 0) {
     return {ok: false, error: 'Payout amount must be greater than zero.'}
   }
-  const response = wallet.payInvoice({
+  const response = wallet.payLnurl({
     walletId,
-    paymentRequest: lnAddress,
+    lnurl: lnAddress,
+    amount: maxSat,
+    currency: 'sat',
+    comment: 'Chess winnings',
     maxSat,
     description,
     extra: {
@@ -595,19 +647,17 @@ function publicMove(move) {
 
 function applyMove(fen, request) {
   const state = parseFen(fen)
-  const legal = legalMoves(state).find(
-    move => move.from === request.from && move.to === request.to && (move.promotion || '') === request.promotion
-  )
+  const legal = legalMoveForRequest(state, request)
   if (!legal) throw new Error('Illegal chess move.')
   const next = makeMove(state, legal)
-  const nextLegal = legalMoves(next)
   const inCheck = isInCheck(next, next.turn)
+  const hasReply = hasLegalMove(next)
   return {
     fen: toFen(next),
     san: moveLabel(legal),
     turn: next.turn === 'w' ? 'white' : 'black',
-    checkmate: inCheck && nextLegal.length === 0,
-    draw: !inCheck && nextLegal.length === 0
+    checkmate: inCheck && !hasReply,
+    draw: !inCheck && !hasReply
   }
 }
 
@@ -664,18 +714,46 @@ function legalMoves(state) {
   return pseudoMoves(state).filter(move => !isInCheck(makeMove(state, move), state.turn))
 }
 
+function legalMoveForRequest(state, request) {
+  const piece = state.board.get(request.from)
+  if (!piece || pieceColor(piece) !== state.turn) return null
+  const moves = generatePieceMoves(state, request.from, piece).filter(
+    move => move.to === request.to && (move.promotion || '') === request.promotion
+  )
+  for (const move of moves) {
+    if (!isInCheck(makeMove(state, move), state.turn)) return move
+  }
+  return null
+}
+
+function hasLegalMove(state) {
+  for (const [square, piece] of state.board.entries()) {
+    if (pieceColor(piece) !== state.turn) continue
+    for (const move of generatePieceMoves(state, square, piece)) {
+      if (!isInCheck(makeMove(state, move), state.turn)) return true
+    }
+  }
+  return false
+}
+
 function pseudoMoves(state) {
   const moves = []
   for (const [square, piece] of state.board.entries()) {
     if (pieceColor(piece) !== state.turn) continue
-    const lower = piece.toLowerCase()
-    if (lower === 'p') pawnMoves(state, square, piece, moves)
-    if (lower === 'n') stepMoves(state, square, piece, moves, [[1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-2, 1], [-1, 2]])
-    if (lower === 'b') slideMoves(state, square, piece, moves, [[1, 1], [1, -1], [-1, -1], [-1, 1]])
-    if (lower === 'r') slideMoves(state, square, piece, moves, [[1, 0], [0, -1], [-1, 0], [0, 1]])
-    if (lower === 'q') slideMoves(state, square, piece, moves, [[1, 1], [1, -1], [-1, -1], [-1, 1], [1, 0], [0, -1], [-1, 0], [0, 1]])
-    if (lower === 'k') kingMoves(state, square, piece, moves)
+    moves.push(...generatePieceMoves(state, square, piece))
   }
+  return moves
+}
+
+function generatePieceMoves(state, square, piece) {
+  const moves = []
+  const lower = piece.toLowerCase()
+  if (lower === 'p') pawnMoves(state, square, piece, moves)
+  if (lower === 'n') stepMoves(state, square, piece, moves, [[1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-2, 1], [-1, 2]])
+  if (lower === 'b') slideMoves(state, square, piece, moves, [[1, 1], [1, -1], [-1, -1], [-1, 1]])
+  if (lower === 'r') slideMoves(state, square, piece, moves, [[1, 0], [0, -1], [-1, 0], [0, 1]])
+  if (lower === 'q') slideMoves(state, square, piece, moves, [[1, 1], [1, -1], [-1, -1], [-1, 1], [1, 0], [0, -1], [-1, 0], [0, 1]])
+  if (lower === 'k') kingMoves(state, square, piece, moves)
   return moves
 }
 
@@ -784,8 +862,49 @@ function isInCheck(state, color) {
     if (piece === king) kingSquare = square
   }
   if (!kingSquare) return true
-  const attackState = {...state, turn: opposite(color)}
-  return pseudoMoves(attackState).some(move => move.to === kingSquare)
+  return isSquareAttacked(state, kingSquare, opposite(color))
+}
+
+function isSquareAttacked(state, square, byColor) {
+  const [file, rank] = squareToPoint(square)
+  const pawnRank = byColor === 'w' ? rank - 1 : rank + 1
+  const pawn = byColor === 'w' ? 'P' : 'p'
+  for (const pawnFile of [file - 1, file + 1]) {
+    if (state.board.get(pointToSquare(pawnFile, pawnRank)) === pawn) return true
+  }
+
+  const knight = byColor === 'w' ? 'N' : 'n'
+  for (const [df, dr] of [[1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-2, 1], [-1, 2]]) {
+    if (state.board.get(pointToSquare(file + df, rank + dr)) === knight) return true
+  }
+
+  if (isAttackedOnLine(state, file, rank, byColor, [[1, 1], [1, -1], [-1, -1], [-1, 1]], ['b', 'q'])) return true
+  if (isAttackedOnLine(state, file, rank, byColor, [[1, 0], [0, -1], [-1, 0], [0, 1]], ['r', 'q'])) return true
+
+  const king = byColor === 'w' ? 'K' : 'k'
+  for (const [df, dr] of [[1, 1], [1, 0], [1, -1], [0, -1], [-1, -1], [-1, 0], [-1, 1], [0, 1]]) {
+    if (state.board.get(pointToSquare(file + df, rank + dr)) === king) return true
+  }
+  return false
+}
+
+function isAttackedOnLine(state, file, rank, byColor, deltas, attackers) {
+  for (const [df, dr] of deltas) {
+    let nf = file + df
+    let nr = rank + dr
+    while (true) {
+      const target = pointToSquare(nf, nr)
+      if (!target) break
+      const piece = state.board.get(target)
+      if (piece) {
+        if (pieceColor(piece) === byColor && attackers.includes(piece.toLowerCase())) return true
+        break
+      }
+      nf += df
+      nr += dr
+    }
+  }
+  return false
 }
 
 function squareToPoint(square) {

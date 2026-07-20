@@ -15,6 +15,7 @@
       {"name": "list-chess-wallets", "visibility": "authenticated"},
       {"name": "create-chess-game", "visibility": "authenticated"},
       {"name": "list-chess-games", "visibility": "authenticated"},
+      {"name": "delete-chess-game", "visibility": "authenticated"},
       {"name": "get-public-chess-game", "visibility": "public"},
       {"name": "join-chess-game", "visibility": "public"},
       {"name": "make-chess-move", "visibility": "public"},
@@ -48,12 +49,25 @@
     {"method": "POST", "path": "/games", "export": "create-chess-game", "auth": "user"},
     {"method": "GET", "path": "/games", "export": "list-chess-games", "auth": "user"},
     {
+      "method": "DELETE",
+      "path": "/games/{game_id}",
+      "export": "delete-chess-game",
+      "auth": "user",
+      "path_params": {
+        "game_id": "gameId"
+      }
+    },
+    {
       "method": "GET",
       "path": "/games/{game_id}",
       "export": "get-public-chess-game",
       "auth": "public",
       "path_params": {
         "game_id": "gameId"
+      },
+      "ownerContext": {
+        "table": "chess_games",
+        "idParam": "gameId"
       }
     },
     {
@@ -63,6 +77,10 @@
       "auth": "public",
       "path_params": {
         "game_id": "gameId"
+      },
+      "ownerContext": {
+        "table": "chess_games",
+        "idParam": "gameId"
       }
     },
     {
@@ -72,6 +90,10 @@
       "auth": "public",
       "path_params": {
         "game_id": "gameId"
+      },
+      "ownerContext": {
+        "table": "chess_games",
+        "idParam": "gameId"
       }
     },
     {
@@ -81,6 +103,10 @@
       "auth": "public",
       "path_params": {
         "game_id": "gameId"
+      },
+      "ownerContext": {
+        "table": "chess_games",
+        "idParam": "gameId"
       }
     },
     {
@@ -129,6 +155,22 @@
             "started_at",
             "completed_at"
           ]
+        },
+        {
+          "table_name": "chess_moves",
+          "source_id_field": "game_id",
+          "public_fields": [
+            "id",
+            "game_id",
+            "move_number",
+            "color",
+            "from_square",
+            "to_square",
+            "promotion",
+            "san",
+            "fen",
+            "created_at"
+          ]
         }
       ]
     },
@@ -151,8 +193,17 @@
       ]
     },
     {
-      "id": "wallet.pay_invoice",
+      "id": "wallet.pay_invoice_background",
       "description": "Pay chess winner payouts to Lightning addresses."
+    },
+    {
+      "id": "websocket.publish",
+      "description": "Publish chess payment, move, resignation, and settlement updates.",
+      "policies": [{"max_messages_per_second": 20}]
+    },
+    {
+      "id": "websocket.subscribe",
+      "description": "Receive live chess game updates."
     }
   ]
 }

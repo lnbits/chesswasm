@@ -8,6 +8,7 @@ const app = Vue.createApp({
       loading: false,
       saving: false,
       creating: false,
+      deletingGameId: '',
       settings: {
         enabled: false,
         haircut: 0,
@@ -165,6 +166,49 @@ const app = Vue.createApp({
       } catch (error) {
         this.showError(error)
       }
+    },
+
+    async deleteGame(game) {
+      if (game.status === 'completed' && game.payoutPending) {
+        this.notify('Settle the pending payout before deleting this game.', 'warning')
+        return
+      }
+      const confirmed = await this.confirmAction({
+        title: 'Delete Game',
+        message: `Delete "${game.name}"? This removes the game, players, and moves.`,
+        okLabel: 'Delete',
+        okColor: 'negative'
+      })
+      if (!confirmed) return
+      this.deletingGameId = game.id
+      try {
+        await client.deleteGame(game.id)
+        this.notify('Chess game deleted.', 'positive')
+        await this.fetchGames()
+      } catch (error) {
+        this.showError(error)
+      } finally {
+        this.deletingGameId = ''
+      }
+    },
+
+    confirmAction({title, message, okLabel = 'OK', okColor = 'primary'}) {
+      return new Promise(resolve => {
+        Quasar.Dialog.create({
+          dark: true,
+          title,
+          message,
+          cancel: true,
+          persistent: true,
+          ok: {
+            label: okLabel,
+            color: okColor
+          }
+        })
+          .onOk(() => resolve(true))
+          .onCancel(() => resolve(false))
+          .onDismiss(() => resolve(false))
+      })
     },
 
     statusLabel(game) {
@@ -332,6 +376,20 @@ const app = Vue.createApp({
                     icon: 'content_copy',
                     onClick: () => this.copyGame(props.row)
                   }, () => h(QTooltip, () => 'Copy public link')),
+                  h(QBtn, {
+                    dense: true,
+                    round: true,
+                    flat: true,
+                    color: 'negative',
+                    icon: 'delete',
+                    loading: this.deletingGameId === props.row.id,
+                    disable: props.row.status === 'completed' && props.row.payoutPending,
+                    onClick: () => this.deleteGame(props.row)
+                  }, () => h(QTooltip, () =>
+                    props.row.status === 'completed' && props.row.payoutPending
+                      ? 'Settle payout before deleting'
+                      : 'Delete game'
+                  )),
                   props.row.status === 'completed' && props.row.payoutPending
                     ? h(QBtn, {
                         dense: true,
@@ -341,15 +399,7 @@ const app = Vue.createApp({
                         icon: 'payments',
                         onClick: () => this.settleGame(props.row)
                       }, () => h(QTooltip, () => 'Pay winner'))
-                    : null,
-                  h(QBtn, {
-                    dense: true,
-                    round: true,
-                    flat: true,
-                    icon: 'open_in_new',
-                    href: this.publicUrl(props.row),
-                    target: '_blank'
-                  }, () => h(QTooltip, () => 'Open public game'))
+                    : null
                 ])
             })
           ])

@@ -55,6 +55,12 @@
         return request(`${baseUrl}/games${suffix}`)
       },
 
+      deleteGame(gameId) {
+        return request(`${baseUrl}/games/${encodeURIComponent(gameId)}`, {
+          method: 'DELETE'
+        })
+      },
+
       getPublicGame(gameId, playerToken = '') {
         const query = playerToken
           ? `?${new URLSearchParams({playerToken}).toString()}`
@@ -92,6 +98,10 @@
 
       subscribePayment(paymentHash, callback) {
         return subscribePayment(paymentHash, callback)
+      },
+
+      subscribeWebsocket(itemId, callback) {
+        return subscribeWebsocket(itemId, callback)
       }
     }
   }
@@ -232,6 +242,42 @@
           bridgeRequest({action: 'payment.unsubscribe', subscriptionId}).catch(error => {
             logFailure('Payment unsubscribe failed.', {subscriptionId, error})
           })
+        }
+      })
+      .catch(error => {
+        bridgeEventHandlers.delete(subscriptionId)
+        throw error
+      })
+  }
+
+  function subscribeWebsocket(itemId, callback) {
+    if (typeof callback !== 'function') {
+      return Promise.reject(new Error('Websocket subscription needs a callback.'))
+    }
+    const subscriptionId = requestId()
+    bridgeEventHandlers.set(subscriptionId, callback)
+    return bridgeRequest({
+      action: 'websocket.subscribe',
+      subscriptionId,
+      itemId
+    })
+      .then(() => {
+        let active = true
+        const deactivate = () => {
+          active = false
+          bridgeEventHandlers.delete(subscriptionId)
+        }
+        return {
+          get active() {
+            return active
+          },
+          unsubscribe() {
+            if (!active) return
+            deactivate()
+            bridgeRequest({action: 'websocket.unsubscribe', subscriptionId}).catch(error => {
+              logFailure('Websocket unsubscribe failed.', {subscriptionId, error})
+            })
+          }
         }
       })
       .catch(error => {
