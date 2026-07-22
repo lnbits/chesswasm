@@ -1,9 +1,9 @@
 {
-  "id": "chesswasm",
-  "name": "Chess",
-  "short_description": "Create paid public chess games where the winner takes the pot.",
-  "version": "0.0.1",
-  "min_lnbits_version": "1.5.5",
-  "extension_type": "wasm",
-  "tags": ["gaming", "chess", "wasm"]
+  "repos": [
+    {
+      "id": "chesswasm",
+      "organisation": "lnbits",
+      "repository": "chesswasm"
+    }
+  ]
 }
