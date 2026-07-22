@@ -1,6 +1,7 @@
 const client = window.createLNbitsExtensionClient({
   extensionId: 'chesswasm'
 })
+const MIN_JOIN_SATS = 20
 
 const app = Vue.createApp({
   data() {
@@ -8,6 +9,7 @@ const app = Vue.createApp({
       loading: false,
       saving: false,
       creating: false,
+      authorizingPayments: false,
       deletingGameId: '',
       settings: {
         enabled: false,
@@ -53,8 +55,13 @@ const app = Vue.createApp({
         this.settings.enabled &&
         this.effectiveWalletId &&
         this.gameForm.name &&
-        Number(this.gameForm.joinAmount) > 0
+        Number.isSafeInteger(Number(this.gameForm.joinAmount)) &&
+        Number(this.gameForm.joinAmount) >= MIN_JOIN_SATS
       )
+    },
+
+    canAuthorizePayments() {
+      return this.settings.enabled && !!this.effectiveWalletId
     },
 
     effectiveWalletId() {
@@ -116,6 +123,7 @@ const app = Vue.createApp({
       if (!this.canCreate) return
       this.creating = true
       try {
+        await this.ensureBackgroundPaymentGrant()
         await client.createGame({
           name: this.gameForm.name,
           joinAmount: Number(this.gameForm.joinAmount)
@@ -126,6 +134,52 @@ const app = Vue.createApp({
         this.showError(error)
       } finally {
         this.creating = false
+      }
+    },
+
+    backgroundPaymentGrant() {
+      const joinAmount = Math.floor(Number(this.gameForm.joinAmount))
+      return {
+        walletId: this.effectiveWalletId,
+        maxAmount: joinAmount * 2,
+        destinationPolicy: 'external_allowed'
+      }
+    },
+
+    async ensureBackgroundPaymentGrant(options = {}) {
+      return await client.requestBackgroundPaymentPermission(
+        this.backgroundPaymentGrant(),
+        options
+      )
+    },
+
+    paymentAuthorizationGrant() {
+      return {
+        walletId: this.effectiveWalletId,
+        maxAmount: 1,
+        destinationPolicy: 'own_wallets_only'
+      }
+    },
+
+    async authorizePayments() {
+      if (!this.canAuthorizePayments || this.authorizingPayments) return
+      this.authorizingPayments = true
+      try {
+        const permission = await client.requestBackgroundPaymentPermission(
+          this.paymentAuthorizationGrant(),
+          {forcePrompt: true}
+        )
+        const savedMax = Number(permission?.grant?.max_amount || 0)
+        this.notify(
+          savedMax
+            ? `Payment permission saved at ${savedMax} sats.`
+            : 'Payment permission saved.',
+          'positive'
+        )
+      } catch (error) {
+        this.showError(error)
+      } finally {
+        this.authorizingPayments = false
       }
     },
 
@@ -238,6 +292,7 @@ const app = Vue.createApp({
     const QCard = component('q-card')
     const QInput = component('q-input')
     const QLayout = component('q-layout')
+    const QSelect = component('q-select')
     const QTable = component('q-table')
     const QTd = component('q-td')
     const QToggle = component('q-toggle')
@@ -289,6 +344,26 @@ const app = Vue.createApp({
               color: 'primary'
             }),
             h('div', {class: 'row q-col-gutter-sm q-mt-xs'}, [
+              h('div', {class: 'col-12'}, [
+                h(QSelect, {
+                  modelValue: this.effectiveWalletId,
+                  'onUpdate:modelValue': value => {
+                    this.settings.walletId = value
+                  },
+                  options: this.wallets.map(wallet => ({
+                    label: wallet.name || wallet.id,
+                    value: wallet.id
+                  })),
+                  emitValue: true,
+                  mapOptions: true,
+                  filled: true,
+                  dense: true,
+                  dark: true,
+                  label: 'Wallet',
+                  disable: !this.wallets.length,
+                  hint: this.wallets.length ? 'Receives entries and pays winners.' : 'Create a wallet before enabling chess games.'
+                })
+              ]),
               h('div', {class: 'col-12 col-sm-6'}, [
                 settingsInput('haircut', {type: 'number', min: 0, max: 100, label: 'Haircut %'})
               ])
@@ -305,7 +380,7 @@ const app = Vue.createApp({
           h(QCard, {dark: true, class: 'panel q-pa-md q-mt-md'}, () => [
             h('h2', {class: 'text-h6 text-weight-bold q-my-none q-mb-md'}, 'New Game'),
             gameInput('name', {label: 'Title'}, value => String(value || '').trim()),
-            gameInput('joinAmount', {type: 'number', min: 1, label: 'Join sats', class: 'q-mt-sm'}, Number),
+            gameInput('joinAmount', {type: 'number', min: MIN_JOIN_SATS, label: 'Join sats (minimum 20)', class: 'q-mt-sm'}, Number),
             h(QBtn, {
               class: 'q-mt-md',
               color: 'primary',
@@ -321,6 +396,16 @@ const app = Vue.createApp({
             h('div', {class: 'row items-center q-col-gutter-sm q-mb-md'}, [
               h('div', {class: 'col'}, [
                 h('h2', {class: 'text-h6 text-weight-bold q-my-none'}, 'Games')
+              ]),
+              h('div', {class: 'col-auto'}, [
+                h(QBtn, {
+                  outline: true,
+                  color: 'primary',
+                  label: 'Authorize Payments',
+                  loading: this.authorizingPayments,
+                  disable: !this.canAuthorizePayments,
+                  onClick: this.authorizePayments
+                })
               ]),
               h('div', {class: 'col-12 col-sm-5'}, [
                 h(QInput, {

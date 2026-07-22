@@ -20,6 +20,7 @@
       {"name": "join-chess-game", "visibility": "public"},
       {"name": "make-chess-move", "visibility": "public"},
       {"name": "resign-chess-game", "visibility": "public"},
+      {"name": "settle-player-chess-payout", "visibility": "public"},
       {"name": "settle-chess-game", "visibility": "authenticated"},
       {"name": "record-chess-payment", "visibility": "event"}
     ]
@@ -111,6 +112,19 @@
     },
     {
       "method": "POST",
+      "path": "/games/{game_id}/payout",
+      "export": "settle-player-chess-payout",
+      "auth": "public",
+      "path_params": {
+        "game_id": "gameId"
+      },
+      "ownerContext": {
+        "table": "chess_games",
+        "idParam": "gameId"
+      }
+    },
+    {
+      "method": "POST",
       "path": "/games/{game_id}/settle",
       "export": "settle-chess-game",
       "auth": "user",
@@ -187,10 +201,14 @@
       "description": "Create public join invoices for configured chess wallets.",
       "policies": [
         {
-          "table": "chess_settings",
+          "table": "chess_games",
           "wallet_field": "wallet_id"
         }
       ]
+    },
+    {
+      "id": "wallet.pay_invoice",
+      "description": "Pay chess winner payouts to Lightning addresses."
     },
     {
       "id": "wallet.pay_invoice_background",

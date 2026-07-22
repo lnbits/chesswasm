@@ -18,6 +18,7 @@
       "fields": [
         {"name": "id", "type": "string"},
         {"name": "settings_id", "type": "string"},
+        {"name": "wallet_id", "type": "string"},
         {"name": "name", "type": "string"},
         {"name": "join_amount", "type": "integer"},
         {"name": "haircut", "type": "number"},

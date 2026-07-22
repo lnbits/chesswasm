@@ -23,6 +23,14 @@
         return this.notify(message, 'negative')
       },
 
+      requestBackgroundPaymentPermission(grant, options = {}) {
+        return bridgeRequest({
+          action: 'permissions.request_background_payment',
+          grant,
+          forcePrompt: options.forcePrompt === true
+        })
+      },
+
       getSettings() {
         return request(`${baseUrl}/settings`)
       },
@@ -84,6 +92,13 @@
 
       resign(gameId, payload) {
         return request(`${baseUrl}/games/${encodeURIComponent(gameId)}/resign`, {
+          method: 'POST',
+          body: payload
+        })
+      },
+
+      settlePlayerPayout(gameId, payload) {
+        return request(`${baseUrl}/games/${encodeURIComponent(gameId)}/payout`, {
           method: 'POST',
           body: payload
         })

@@ -5,6 +5,7 @@ const GAMES_TABLE = 'chess_games'
 const PLAYERS_TABLE = 'chess_players'
 const MOVES_TABLE = 'chess_moves'
 const SETTINGS_ID = 'chesswasm-settings'
+const MIN_JOIN_SATS = 20
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
 const GAME_SEARCH_FIELDS = ['name', 'winner_ln_address', 'status']
 const FILES = 'abcdefgh'
@@ -55,13 +56,14 @@ export function createChessGame(requestJson) {
     const joinAmount = normalizeInteger(
       request.joinAmount ?? request.join_amount,
       100,
-      1,
-      100000000
+      MIN_JOIN_SATS,
+      Number.MAX_SAFE_INTEGER
     )
     const now = system.now()
     const game = {
       id: cleanId(request.id) || system.id('chess').id || system.id('chess'),
       settings_id: settings.id,
+      wallet_id: settings.wallet_id,
       name: cleanText(request.name, 80) || 'Paid chess game',
       join_amount: joinAmount,
       haircut: Number(settings.haircut || 0),
@@ -150,12 +152,12 @@ export function joinChessGame(requestJson) {
     const request = parseJsonObject(requestJson)
     const gameId = requiredText(request.gameId, 'gameId', 128)
     const lnAddress = normalizeLnAddress(request.lnAddress ?? request.ln_address)
-    const game = getPublicGame(gameId)
+    const game = getGame(gameId)
     if (game.status !== 'waiting') throw new Error('This chess game has already started.')
     if (Number(game.players_count || 0) >= 2) throw new Error('This chess game is already full.')
 
     const invoice = wallet.createInvoicePublic({
-      sourceId: game.settings_id,
+      sourceId: game.id,
       amount: Number(game.join_amount),
       currency: 'sat',
       memo: `Chess ${game.name} for ${lnAddress}`,
@@ -188,7 +190,7 @@ export function recordChessPayment(eventJson) {
     if (!paymentHash) throw new Error('paymentHash is required.')
     if (!gameId) throw new Error('game_id is required.')
 
-    const game = getPublicGame(gameId)
+    const game = getGame(gameId)
     const existing = storage.get(PLAYERS_TABLE, paymentHash, null)
     if (existing) {
       return {game: publicGame(game), player: publicPlayer(existing, true), status: existing.status}
@@ -197,11 +199,21 @@ export function recordChessPayment(eventJson) {
     const paidSat = Math.abs(Number(event.amount || event.payment?.amount || 0)) / 1000
     if (paidSat && Math.trunc(paidSat) !== Number(game.join_amount)) {
       const player = markPlayer(paymentHash, gameId, lnAddress, '', 'amount-mismatch')
-      return {game: publicGame(game), player: publicPlayer(player, true), status: 'amount-mismatch'}
+      const refund = refundPlayer(game, lnAddress, Math.trunc(paidSat), gameId, 'amount-mismatch')
+      if (refund.ok) {
+        player.status = 'refunded'
+        storage.set(PLAYERS_TABLE, player)
+      }
+      return {game: publicGame(game), player: publicPlayer(player, true), status: player.status, refund}
     }
     if (game.status !== 'waiting' || Number(game.players_count || 0) >= 2) {
       const player = markPlayer(paymentHash, gameId, lnAddress, '', 'refund-pending')
-      return {game: publicGame(game), player: publicPlayer(player, true), status: 'refund-pending'}
+      const refund = refundPlayer(game, lnAddress, Math.trunc(paidSat), gameId, 'full')
+      if (refund.ok) {
+        player.status = 'refunded'
+        storage.set(PLAYERS_TABLE, player)
+      }
+      return {game: publicGame(game), player: publicPlayer(player, true), status: player.status, refund}
     }
 
     const paidPlayers = paidPlayersForGame(gameId)
@@ -233,7 +245,7 @@ export function makeChessMove(requestJson) {
     const from = normalizeSquare(request.from)
     const to = normalizeSquare(request.to)
     const promotion = normalizePromotion(request.promotion)
-    const game = getPublicGame(gameId)
+    const game = getGame(gameId)
     const player = requireActivePlayer(game, token)
     if (game.status !== 'active') throw new Error('This chess game is not active.')
     if (player.color !== game.turn) throw new Error(`It is ${game.turn}'s turn.`)
@@ -244,6 +256,7 @@ export function makeChessMove(requestJson) {
     const status = move.checkmate ? 'completed' : move.draw ? 'draw' : 'active'
     const winnerColor = move.checkmate ? player.color : ''
     const winnerLnAddress = move.checkmate ? player.ln_address : ''
+    const completed = move.checkmate || move.draw
     const updatedGame = {
       ...game,
       status,
@@ -256,10 +269,10 @@ export function makeChessMove(requestJson) {
       turn: move.turn,
       move_count: moveNumber,
       updated_at: now,
-      completed_at: status === 'completed' || status === 'draw' ? now : null
+      completed_at: completed ? now : null
     }
     storage.set(GAMES_TABLE, updatedGame)
-    storage.set(MOVES_TABLE, {
+    const moveRecord = {
       id: `${gameId}-${moveNumber}`,
       game_id: gameId,
       move_number: moveNumber,
@@ -270,11 +283,12 @@ export function makeChessMove(requestJson) {
       san: move.san,
       fen: move.fen,
       created_at: now
-    })
+    }
+    storage.set(MOVES_TABLE, moveRecord)
     publishGame(updatedGame, 'move')
     return {
       game: publicGame(updatedGame),
-      move: publicMove(storage.get(MOVES_TABLE, `${gameId}-${moveNumber}`, null)),
+      move: publicMove(moveRecord),
       player: publicPlayer(player, true),
       payout: {ok: true, pending: move.checkmate}
     }
@@ -305,7 +319,37 @@ export function resignChessGame(requestJson) {
     }
     storage.set(GAMES_TABLE, updatedGame)
     publishGame(updatedGame, 'resigned')
-    return {game: publicGame(updatedGame), player: publicPlayer(player, true), payout: {ok: true, pending: true}}
+    return {
+      game: publicGame(updatedGame),
+      player: publicPlayer(player, true),
+      payout: {ok: true, pending: true}
+    }
+  })
+}
+
+export function settlePlayerChessPayout(requestJson) {
+  return runJson(() => {
+    const request = parseJsonObject(requestJson)
+    const gameId = requiredText(request.gameId, 'gameId', 128)
+    const token = requiredText(request.playerToken ?? request.player_token, 'playerToken', 128)
+    const game = getGame(gameId)
+    requireActivePlayer(game, token)
+    if (game.status !== 'completed') throw new Error('Only completed chess games can be settled.')
+    if (!game.winner_ln_address || !game.winner_color) throw new Error('Chess winner is missing.')
+    if (game.payout_pending !== true) {
+      return {
+        game: publicGame(game),
+        payout: {ok: game.payout_status === 'paid', pending: false, alreadySettled: true}
+      }
+    }
+    if (game.payout_status === 'processing') {
+      return {
+        game: publicGame(game),
+        payout: {ok: true, pending: true, processing: true}
+      }
+    }
+    const settlement = settleChessPayout(game, 'settled')
+    return {game: publicGame(settlement.game), payout: settlement.payout}
   })
 }
 
@@ -317,25 +361,46 @@ export function settleChessGame(requestJson) {
     if (game.status !== 'completed') throw new Error('Only completed chess games can be settled.')
     if (!game.winner_ln_address || !game.winner_color) throw new Error('Chess winner is missing.')
     if (game.payout_pending !== true) throw new Error('This chess game is already settled.')
-    const settings = getSettingsById(game.settings_id)
-    const payout = payWinner({
-      walletId: settings.wallet_id,
-      lnAddress: game.winner_ln_address,
-      maxSat: payoutAmount(game),
-      description: `Chess winnings for ${game.name}`,
-      gameId,
-      color: game.winner_color
-    })
-    const updatedGame = {
-      ...game,
-      payout_pending: !payout.ok,
-      payout_status: payout.ok ? 'paid' : 'failed',
-      updated_at: system.now()
-    }
-    storage.set(GAMES_TABLE, updatedGame)
-    publishGame(updatedGame, 'settled')
-    return {game: publicGame(updatedGame), payout}
+    if (game.payout_status === 'processing') throw new Error('Payout is already processing.')
+    const settlement = settleChessPayout(game, 'settled')
+    return {game: publicGame(settlement.game), payout: settlement.payout}
   })
+}
+
+function settleChessPayout(game, event) {
+  const processingGame = {
+    ...game,
+    status: 'completed',
+    payout_pending: true,
+    payout_status: 'processing',
+    updated_at: system.now(),
+    completed_at: game.completed_at || system.now()
+  }
+  storage.set(GAMES_TABLE, processingGame)
+
+  const settings = getSettingsById(processingGame.settings_id)
+  let payout
+  try {
+    payout = payWinner({
+      walletId: processingGame.wallet_id || settings.wallet_id,
+      lnAddress: processingGame.winner_ln_address,
+      maxSat: payoutAmount(processingGame),
+      description: `Chess winnings for ${processingGame.name}`,
+      gameId: processingGame.id,
+      color: processingGame.winner_color
+    })
+  } catch (error) {
+    payout = {ok: false, error: errorMessage(error)}
+  }
+  const updatedGame = {
+    ...processingGame,
+    payout_pending: !payout.ok,
+    payout_status: payout.ok ? 'paid' : 'failed',
+    updated_at: system.now()
+  }
+  storage.set(GAMES_TABLE, updatedGame)
+  publishGame(updatedGame, event)
+  return {game: updatedGame, payout}
 }
 
 function publishGame(game, event) {
@@ -468,32 +533,19 @@ function publicPlayersFromGame(game) {
 }
 
 function publicMovesForGame(game) {
-  const gameId = game.id
-  if (Number(game.move_count || 0) <= 0) return []
-  try {
-    return storage.getPublicPaginated(MOVES_TABLE, {
-      sourceId: gameId,
-      filters: {game_id: gameId},
-      sortBy: 'move_number',
-      descending: false,
-      limit: 500,
-      offset: 0
-    }).data.map(publicMove)
-  } catch (error) {
-    system.log(`chesswasm public moves fallback: ${errorMessage(error)}`, 'warning')
-    return publicMovesFromPgn(game)
-  }
+  return publicMovesFromPgn(game, 20)
 }
 
-function publicMovesFromPgn(game) {
+function publicMovesFromPgn(game, limit = 20) {
   const tokens = cleanText(game.pgn || '', 4000)
     .split(/\s+/)
     .filter(token => token && !/^\d+\.$/.test(token))
-  return tokens.map((token, index) => ({
-    id: `${game.id}-${index + 1}`,
+  const start = Math.max(0, tokens.length - limit)
+  return tokens.slice(start).map((token, index) => ({
+    id: `${game.id}-${start + index + 1}`,
     gameId: game.id,
-    moveNumber: index + 1,
-    color: index % 2 === 0 ? 'white' : 'black',
+    moveNumber: start + index + 1,
+    color: (start + index) % 2 === 0 ? 'white' : 'black',
     from: token.slice(0, 2),
     to: token.slice(2, 4),
     promotion: token.slice(4, 5),
@@ -582,6 +634,34 @@ function payWinner({walletId, lnAddress, maxSat, description, gameId, color}) {
   }
 }
 
+function refundPlayer(game, lnAddress, amountSats, gameId, reason) {
+  if (!Number.isInteger(amountSats) || amountSats <= 0) {
+    return {ok: false, error: 'Refund amount must be greater than zero.'}
+  }
+  if (!game.wallet_id) return {ok: false, error: 'Chess wallet is not configured.'}
+  if (!lnAddress) return {ok: false, error: 'Lightning address is missing.'}
+  const response = wallet.payLnurl({
+    walletId: game.wallet_id,
+    lnurl: lnAddress,
+    amount: amountSats,
+    currency: 'sat',
+    comment: 'Chess refund',
+    maxSat: amountSats,
+    description: `Chess refund for ${game.name}`,
+    extra: {
+      chess_game_id: gameId,
+      chess_refund_reason: reason
+    }
+  })
+  return {
+    ok: response.ok === true,
+    error: response.error || '',
+    checkingId: response.checkingId || '',
+    paymentHash: response.paymentHash || '',
+    status: response.status || ''
+  }
+}
+
 function publicSettings(settings) {
   return {
     id: settings.id,
@@ -595,6 +675,7 @@ function publicSettings(settings) {
 }
 
 function publicGame(game) {
+  const boardStatus = boardStatusForGame(game)
   return {
     id: game.id,
     settingsId: game.settings_id,
@@ -607,6 +688,9 @@ function publicGame(game) {
     winnerLnAddress: maskLnAddress(game.winner_ln_address || ''),
     payoutPending: game.payout_pending === true,
     payoutStatus: game.payout_status || '',
+    inCheck: boardStatus.inCheck,
+    checkmate: boardStatus.checkmate,
+    checkedColor: boardStatus.checkedColor,
     fen: game.fen || START_FEN,
     pgn: game.pgn || '',
     turn: game.turn || 'white',
@@ -652,12 +736,31 @@ function applyMove(fen, request) {
   const next = makeMove(state, legal)
   const inCheck = isInCheck(next, next.turn)
   const hasReply = hasLegalMove(next)
+  const checkmate = inCheck && !hasReply
   return {
     fen: toFen(next),
-    san: moveLabel(legal),
+    san: moveLabel(legal, {check: inCheck, checkmate}),
     turn: next.turn === 'w' ? 'white' : 'black',
-    checkmate: inCheck && !hasReply,
+    check: inCheck,
+    checkmate,
     draw: !inCheck && !hasReply
+  }
+}
+
+function boardStatusForGame(game) {
+  try {
+    const state = parseFen(game.fen || START_FEN)
+    const inCheck = isInCheck(state, state.turn)
+    const lastMove = cleanText(game.pgn || '', 4000).split(/\s+/).pop() || ''
+    const checkmate = game.status === 'completed' && lastMove.endsWith('#')
+    return {
+      inCheck,
+      checkmate,
+      draw: game.status === 'draw',
+      checkedColor: inCheck ? colorName(state.turn) : ''
+    }
+  } catch (_) {
+    return {inCheck: false, checkmate: false, draw: false, checkedColor: ''}
   }
 }
 
@@ -710,10 +813,6 @@ function toFen(state) {
   return `${ranks.join('/')} ${state.turn} ${state.castling || '-'} ${state.ep || '-'} ${state.halfmove || 0} ${state.fullmove || 1}`
 }
 
-function legalMoves(state) {
-  return pseudoMoves(state).filter(move => !isInCheck(makeMove(state, move), state.turn))
-}
-
 function legalMoveForRequest(state, request) {
   const piece = state.board.get(request.from)
   if (!piece || pieceColor(piece) !== state.turn) return null
@@ -734,15 +833,6 @@ function hasLegalMove(state) {
     }
   }
   return false
-}
-
-function pseudoMoves(state) {
-  const moves = []
-  for (const [square, piece] of state.board.entries()) {
-    if (pieceColor(piece) !== state.turn) continue
-    moves.push(...generatePieceMoves(state, square, piece))
-  }
-  return moves
 }
 
 function generatePieceMoves(state, square, piece) {
@@ -924,8 +1014,13 @@ function opposite(color) {
   return color === 'w' ? 'b' : 'w'
 }
 
-function moveLabel(move) {
-  return `${move.from}${move.to}${move.promotion || ''}`
+function colorName(color) {
+  return color === 'w' ? 'white' : 'black'
+}
+
+function moveLabel(move, result = {}) {
+  const suffix = result.checkmate ? '#' : result.check ? '+' : ''
+  return `${move.from}${move.to}${move.promotion || ''}${suffix}`
 }
 
 function appendPgn(pgn, moveNumber, color, san) {

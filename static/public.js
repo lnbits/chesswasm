@@ -15,7 +15,10 @@ const state = {
   websocket: null,
   refreshTimer: null,
   rendering: false,
-  renderAgain: false
+  renderAgain: false,
+  notifiedStartAt: 0,
+  notifiedCheckMove: 0,
+  notifiedGameOverMove: 0
 }
 
 const client = window.createLNbitsExtensionClient({
@@ -73,15 +76,15 @@ copyInvoiceButton.addEventListener('click', async () => {
 resignButton.addEventListener('click', async () => {
   if (!state.gameId || !playerToken()) return
   const confirmed = await confirmAction({
-    title: 'Resign Game',
-    message: 'Resign this game? Your opponent will be marked as the winner.',
+    title: 'Resign Match',
+    message: 'Are you sure you want to resign this match?',
     okLabel: 'Resign'
   })
   if (!confirmed) return
   try {
-    await client.resign(state.gameId, {playerToken: playerToken()})
+    const result = await client.resign(state.gameId, {playerToken: playerToken()})
+    await settleCompletedGame(result)
     await renderGame()
-    showConfetti()
   } catch (error) {
     showError(error)
   }
@@ -117,11 +120,13 @@ async function renderGame() {
     return
   }
 
+  const previousGame = state.game
   const response = await client.getPublicGame(state.gameId, playerToken())
   const game = response?.game
   if (!game) throw new Error('Chess game not found.')
   state.game = game
   state.player = response.player || null
+  notifyGameChanges(previousGame, game, state.player)
   gameTitle.textContent = game.name
   gameSubtitle.textContent = `${game.joinAmount} sats to join`
   gameStatus.textContent = statusText(game, state.player)
@@ -160,8 +165,7 @@ async function ensureRealtime() {
       const data = event.data || {}
       if (data.type !== 'server') return
       queueRenderGame()
-      if (data.event === 'move') return
-      if (data.event === 'resigned' || data.event === 'settled') showConfetti()
+      if (data.game) notifyGameChanges(state.game, data.game, state.player)
     })
   } catch (error) {
     console.warn('[chesswasm public] websocket subscribe failed', error)
@@ -249,7 +253,6 @@ async function onSquareClick(square, piece) {
 function onPointerDown(event, square, piece) {
   if (event.button !== 0 || !canMovePiece(piece)) return
   event.preventDefault()
-  event.currentTarget.setPointerCapture(event.pointerId)
   state.draggedSquare = square
   state.selectedSquare = square
   state.legalTargets = legalTargetsForSquare(square)
@@ -258,7 +261,28 @@ function onPointerDown(event, square, piece) {
   updateBoardHighlights()
 
   const source = event.currentTarget
+  let dragEnded = false
+  try {
+    source.setPointerCapture(event.pointerId)
+  } catch (_) {
+    // Some browsers can reject capture during fast pointer transitions.
+  }
   source.classList.add('dragging-source')
+
+  const cleanupDragListeners = () => {
+    source.classList.remove('dragging-source')
+    source.removeEventListener('pointermove', onMove)
+    source.removeEventListener('pointerup', onEnd)
+    source.removeEventListener('pointercancel', onCancel)
+    document.removeEventListener('pointermove', onMove)
+    document.removeEventListener('pointerup', onEnd)
+    document.removeEventListener('pointercancel', onCancel)
+    try {
+      if (source.hasPointerCapture(event.pointerId)) source.releasePointerCapture(event.pointerId)
+    } catch (_) {
+      // Capture may already have been released by the browser.
+    }
+  }
 
   const onMove = moveEvent => {
     moveEvent.preventDefault()
@@ -266,29 +290,29 @@ function onPointerDown(event, square, piece) {
   }
 
   const onEnd = async endEvent => {
+    if (dragEnded) return
+    dragEnded = true
     endEvent.preventDefault()
-    source.classList.remove('dragging-source')
-    source.removeEventListener('pointermove', onMove)
-    source.removeEventListener('pointerup', onEnd)
-    source.removeEventListener('pointercancel', onCancel)
-    const target = document.elementFromPoint(endEvent.clientX, endEvent.clientY)?.closest('.board-square')
-    const targetSquare = target?.dataset.square || ''
+    cleanupDragListeners()
+    const targetSquare = squareFromClientPoint(endEvent.clientX, endEvent.clientY)
     await finishDragMove(square, targetSquare)
   }
 
   const onCancel = cancelEvent => {
+    if (dragEnded) return
+    dragEnded = true
     cancelEvent.preventDefault()
-    source.classList.remove('dragging-source')
-    source.removeEventListener('pointermove', onMove)
-    source.removeEventListener('pointerup', onEnd)
-    source.removeEventListener('pointercancel', onCancel)
+    cleanupDragListeners()
     resetDragState()
-    updateBoardHighlights()
+    renderBoard(state.game.fen, state.player.color)
   }
 
   source.addEventListener('pointermove', onMove)
   source.addEventListener('pointerup', onEnd)
   source.addEventListener('pointercancel', onCancel)
+  document.addEventListener('pointermove', onMove)
+  document.addEventListener('pointerup', onEnd)
+  document.addEventListener('pointercancel', onCancel)
 }
 
 async function finishDragMove(from, to) {
@@ -308,17 +332,31 @@ async function finishDragMove(from, to) {
 async function submitMove(from, to) {
   try {
     const promotion = promotionForMove(from, to)
-    await client.makeMove(state.gameId, {
+    const result = await client.makeMove(state.gameId, {
       playerToken: playerToken(),
       from,
       to,
       promotion
     })
+    await settleCompletedGame(result)
     await renderGame()
     if (state.game?.status === 'completed') showConfetti()
   } catch (error) {
     await renderGame()
     showError(error)
+  }
+}
+
+async function settleCompletedGame(result) {
+  if (result?.game?.status !== 'completed' || result?.game?.payoutPending !== true) return
+  try {
+    const settlement = await client.settlePlayerPayout(state.gameId, {playerToken: playerToken()})
+    if (settlement?.payout?.ok === false) {
+      notifyInfo('Game completed. Payout is pending owner retry.', 'warning')
+    }
+  } catch (error) {
+    console.warn('[chesswasm public] payout settlement failed after game completion', error)
+    notifyInfo('Game completed. Payout is pending owner retry.', 'warning')
   }
 }
 
@@ -364,6 +402,26 @@ function resetDragState() {
   removeDragGhost()
 }
 
+function squareFromClientPoint(clientX, clientY) {
+  const rect = board.getBoundingClientRect()
+  if (
+    clientX < rect.left ||
+    clientX >= rect.right ||
+    clientY < rect.top ||
+    clientY >= rect.bottom ||
+    rect.width <= 0 ||
+    rect.height <= 0
+  ) {
+    return ''
+  }
+  const orientation = state.player?.color === 'black' ? 'black' : 'white'
+  const col = Math.min(7, Math.max(0, Math.floor(((clientX - rect.left) / rect.width) * 8)))
+  const row = Math.min(7, Math.max(0, Math.floor(((clientY - rect.top) / rect.height) * 8)))
+  const file = orientation === 'black' ? 'hgfedcba'[col] : 'abcdefgh'[col]
+  const rank = orientation === 'black' ? row + 1 : 8 - row
+  return `${file}${rank}`
+}
+
 function renderPlayers(players, currentPlayer) {
   playerList.innerHTML = ''
   if (!players.length) {
@@ -404,10 +462,46 @@ function statusText(game, player) {
     const winner = game.winnerColor ? `${game.winnerColor} won` : 'Game complete'
     return game.payoutPending ? `${winner}; payout pending` : winner
   }
+  if (game.inCheck && game.checkedColor) {
+    if (player && player.color === game.checkedColor) return `You are ${player.color}; you are in check`
+    return `${capitalize(game.checkedColor)} is in check`
+  }
   if (!player) return `${capitalize(game.turn)} to move; open your private player link to play`
   const side = `You are ${player.color}`
   if (game.turn === player.color) return `${side}; your move`
   return `${side}; ${capitalize(game.turn)} to move`
+}
+
+function notifyGameChanges(previousGame, game, player) {
+  if (!game) return
+  const startedAt = Number(game.startedAt || 0)
+  if (
+    startedAt &&
+    state.notifiedStartAt !== startedAt &&
+    previousGame?.status === 'waiting' &&
+    game.status === 'active'
+  ) {
+    state.notifiedStartAt = startedAt
+    notifyInfo(player ? 'Game started. Your clock is ticking.' : 'Game started.')
+  }
+
+  const moveCount = Number(game.moveCount || 0)
+  if (game.inCheck && game.status === 'active' && moveCount && state.notifiedCheckMove !== moveCount) {
+    state.notifiedCheckMove = moveCount
+    const message =
+      player && player.color === game.checkedColor
+        ? 'You are in check.'
+        : `${capitalize(game.checkedColor || game.turn)} is in check.`
+    notifyInfo(message, 'warning')
+  }
+
+  if (game.status === 'completed' && game.checkmate && moveCount && state.notifiedGameOverMove !== moveCount) {
+    state.notifiedGameOverMove = moveCount
+    const won = player && player.color === game.winnerColor
+    if (won) showConfetti()
+    const payoutText = game.payoutStatus === 'paid' ? ' Payout sent.' : game.payoutPending ? ' Payout pending.' : ''
+    notifyInfo(won ? `Checkmate. You won.${payoutText}` : `Checkmate. ${capitalize(game.winnerColor)} won.${payoutText}`)
+  }
 }
 
 function openInvoiceDialog(invoice) {
@@ -737,8 +831,49 @@ function isInCheck(chessState, color) {
     if (piece === king) kingSquare = square
   }
   if (!kingSquare) return true
-  const attackState = {...chessState, turn: oppositeFenColor(color)}
-  return pseudoMoves(attackState).some(move => move.to === kingSquare)
+  return isSquareAttacked(chessState, kingSquare, oppositeFenColor(color))
+}
+
+function isSquareAttacked(chessState, square, byColor) {
+  const [file, rank] = squareToPoint(square)
+  const pawnRank = byColor === 'w' ? rank - 1 : rank + 1
+  const pawn = byColor === 'w' ? 'P' : 'p'
+  for (const pawnFile of [file - 1, file + 1]) {
+    if (chessState.board.get(pointToSquare(pawnFile, pawnRank)) === pawn) return true
+  }
+
+  const knight = byColor === 'w' ? 'N' : 'n'
+  for (const [df, dr] of [[1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-2, 1], [-1, 2]]) {
+    if (chessState.board.get(pointToSquare(file + df, rank + dr)) === knight) return true
+  }
+
+  if (isAttackedOnLine(chessState, file, rank, byColor, [[1, 1], [1, -1], [-1, -1], [-1, 1]], ['b', 'q'])) return true
+  if (isAttackedOnLine(chessState, file, rank, byColor, [[1, 0], [0, -1], [-1, 0], [0, 1]], ['r', 'q'])) return true
+
+  const king = byColor === 'w' ? 'K' : 'k'
+  for (const [df, dr] of [[1, 1], [1, 0], [1, -1], [0, -1], [-1, -1], [-1, 0], [-1, 1], [0, 1]]) {
+    if (chessState.board.get(pointToSquare(file + df, rank + dr)) === king) return true
+  }
+  return false
+}
+
+function isAttackedOnLine(chessState, file, rank, byColor, deltas, attackers) {
+  for (const [df, dr] of deltas) {
+    let nf = file + df
+    let nr = rank + dr
+    while (true) {
+      const target = pointToSquare(nf, nr)
+      if (!target) break
+      const piece = chessState.board.get(target)
+      if (piece) {
+        if (fenPieceColor(piece) === byColor && attackers.includes(piece.toLowerCase())) return true
+        break
+      }
+      nf += df
+      nr += dr
+    }
+  }
+  return false
 }
 
 function squareToPoint(square) {
@@ -822,6 +957,12 @@ function showError(error) {
   console.error('[chesswasm public]', message, error)
   client.notifyError(message).catch(notifyError => {
     console.error('[chesswasm public] failed to notify error', notifyError)
+  })
+}
+
+function notifyInfo(message, level = 'info') {
+  client.notify(message, level).catch(error => {
+    console.error('[chesswasm public] failed to notify', error)
   })
 }
 

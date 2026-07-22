@@ -1,0 +1,45 @@
+import assertModule from 'assert'
+import {promises as fs} from 'fs'
+
+const assert = assertModule.strict
+let source = await fs.readFile(new URL('../src/index.js', import.meta.url), 'utf8')
+source = source.replace(/^import .*\n\n/, '').replace(/export function /g, 'function ')
+
+function createGame(joinAmount, expectedOk = true) {
+  let storedGame = null
+  const storage = {
+    get(table) {
+      if (table === 'chess_settings') {
+        return {id: 'chesswasm-settings', enabled: true, wallet_id: 'wallet_1', haircut: 0}
+      }
+      return null
+    },
+    set(table, row) {
+      if (table === 'chess_games') storedGame = row
+    }
+  }
+  const system = {
+    id() { return {id: 'chess_1'} },
+    now() { return 1_700_000_000 },
+    log() {}
+  }
+  const createChessGame = Function(
+    'storage', 'system', 'wallet', 'websocket',
+    `${source}; return createChessGame`
+  )(storage, system, {}, {})
+  const response = JSON.parse(createChessGame(JSON.stringify({joinAmount})))
+  assert.equal(response.ok, expectedOk, response.error)
+  if (!response.ok) return {error: response.error}
+  return {game: response.data.game, storedGame}
+}
+
+const belowMinimum = createGame(19, false)
+assert.match(belowMinimum.error, /at least 20/)
+
+for (const [requested, expected] of [[20, 20], [100_000_001, 100_000_001]]) {
+  const result = createGame(requested)
+  assert.equal(result.game.joinAmount, expected)
+  assert.equal(result.storedGame.join_amount, expected)
+}
+
+console.log('Chess minimum join amount tests passed')

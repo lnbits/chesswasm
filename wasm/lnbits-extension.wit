@@ -326,6 +326,7 @@ world chesswasm {
   export join-chess-game: func(request-json: string) -> string;
   export make-chess-move: func(request-json: string) -> string;
   export resign-chess-game: func(request-json: string) -> string;
+  export settle-player-chess-payout: func(request-json: string) -> string;
   export settle-chess-game: func(request-json: string) -> string;
   export record-chess-payment: func(event-json: string) -> string;
 }
