@@ -2,8 +2,9 @@
   "id": "chesswasm",
   "name": "Chess",
   "short_description": "Create paid public chess games where the winner takes the pot.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "min_lnbits_version": "1.5.5",
+  "tile": "/chesswasm/static/assets/icon.png",
   "tags": ["gaming", "chess", "wasm"],
   "extension_type": "wasm",
   "wasm": {
