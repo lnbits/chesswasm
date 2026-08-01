@@ -12,6 +12,12 @@ const storage = {
   },
   set(table, row) {
     rows.set(`${table}:${row.id}`, row)
+  },
+  getPaginated(table) {
+    const data = [...rows.entries()]
+      .filter(([key]) => key.startsWith(`${table}:`))
+      .map(([, row]) => row)
+    return {data, total: data.length}
   }
 }
 const system = {
@@ -32,6 +38,17 @@ const saved = JSON.parse(api.saveChessSettings(JSON.stringify({
 })))
 assert.equal(saved.ok, true, saved.error)
 assert.equal(saved.data.settings.haircut, 15)
+assert.equal(saved.data.settings.id, 'chess_1')
+
+const resaved = JSON.parse(api.saveChessSettings(JSON.stringify({
+  enabled: true,
+  walletId: 'wallet_2',
+  walletName: 'Second wallet',
+  haircut: 15
+})))
+assert.equal(resaved.ok, true, resaved.error)
+assert.equal(resaved.data.settings.id, saved.data.settings.id)
+assert.equal(resaved.data.settings.walletId, 'wallet_2')
 
 const created = JSON.parse(api.createChessGame(JSON.stringify({
   name: 'Haircut game',
@@ -39,6 +56,7 @@ const created = JSON.parse(api.createChessGame(JSON.stringify({
 })))
 assert.equal(created.ok, true, created.error)
 assert.equal(created.data.game.haircut, 15)
+assert.equal(rows.get('chess_games:chess_1').wallet_id, 'wallet_2')
 assert.equal(api.payoutAmount(rows.get('chess_games:chess_1')), 171)
 
 console.log('Chess haircut tests passed')
