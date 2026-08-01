@@ -1,0 +1,68 @@
+{
+  "version": 2,
+  "operations": [
+    {
+      "op": "add_field",
+      "table": "chess_games",
+      "field": {
+        "name": "state_version",
+        "type": "integer",
+        "default": 0
+      }
+    },
+    {
+      "op": "add_field",
+      "table": "chess_moves",
+      "field": {
+        "name": "action_id",
+        "type": "string",
+        "default": ""
+      }
+    },
+    {
+      "op": "add_field",
+      "table": "chess_games",
+      "field": {
+        "name": "last_action_id",
+        "type": "string",
+        "default": ""
+      }
+    },
+    {
+      "op": "add_field",
+      "table": "chess_moves",
+      "field": {
+        "name": "state_version",
+        "type": "integer",
+        "default": 0
+      }
+    },
+    {
+      "op": "add_field",
+      "table": "chess_moves",
+      "field": {
+        "name": "game_status",
+        "type": "string",
+        "default": "active"
+      }
+    },
+    {
+      "op": "add_field",
+      "table": "chess_moves",
+      "field": {
+        "name": "next_turn",
+        "type": "string",
+        "default": ""
+      }
+    },
+    {
+      "op": "add_field",
+      "table": "chess_moves",
+      "field": {
+        "name": "winner_color",
+        "type": "string",
+        "default": ""
+      }
+    }
+  ]
+}

@@ -601,6 +601,8 @@ export function createChessGame(requestJson) {
       pgn: '',
       turn: 'white',
       move_count: 0,
+      state_version: 0,
+      last_action_id: '',
       created_at: now,
       updated_at: now,
       started_at: null,
@@ -748,6 +750,7 @@ export function recordChessPayment(eventJson) {
       white_payment_hash: color === 'white' ? paymentHash : game.white_payment_hash,
       black_payment_hash: color === 'black' ? paymentHash : game.black_payment_hash,
       status: paidPlayers.length + 1 === 2 ? 'active' : 'waiting',
+      state_version: gameStateVersion(game) + 1,
       started_at: paidPlayers.length + 1 === 2 ? now : game.started_at,
       updated_at: now
     }
@@ -767,6 +770,23 @@ export function makeChessMove(requestJson) {
     const promotion = normalizePromotion(request.promotion)
     const game = getGame(gameId)
     const player = requireActivePlayer(game, token)
+    const actionId =
+      normalizeActionId(request.actionId ?? request.action_id) ||
+      `legacy-${gameStateVersion(game)}-${player.color}-${from}-${to}-${promotion}`
+    const priorAction = moveForAction(gameId, actionId)
+    if (priorAction) {
+      return idempotentMoveResult(game, player, priorAction, {
+        from,
+        to,
+        promotion
+      })
+    }
+    const expectedVersion = optionalStateVersion(
+      request.expectedStateVersion ?? request.expected_state_version
+    )
+    if (expectedVersion !== null && expectedVersion !== gameStateVersion(game)) {
+      throw new Error('The game changed before this move. Refresh and try again.')
+    }
     if (game.status !== 'active') throw new Error('This chess game is not active.')
     if (player.color !== game.turn) throw new Error(`It is ${game.turn}'s turn.`)
 
@@ -777,7 +797,7 @@ export function makeChessMove(requestJson) {
     const winnerColor = move.checkmate ? player.color : ''
     const winnerLnAddress = move.checkmate ? player.ln_address : ''
     const completed = move.checkmate || move.draw
-    const updatedGame = {
+    const updatedGame = versionedGame(game, {
       ...game,
       status,
       winner_color: winnerColor,
@@ -788,14 +808,19 @@ export function makeChessMove(requestJson) {
       pgn: appendPgn(game.pgn, moveNumber, player.color, move.san),
       turn: move.turn,
       move_count: moveNumber,
+      last_action_id: actionId,
       updated_at: now,
       completed_at: completed ? now : null
-    }
-    storage.set(GAMES_TABLE, updatedGame)
+    })
     const moveRecord = {
       id: `${gameId}-${moveNumber}`,
       game_id: gameId,
       move_number: moveNumber,
+      action_id: actionId,
+      state_version: gameStateVersion(game) + 1,
+      game_status: status,
+      next_turn: move.turn,
+      winner_color: winnerColor,
       color: player.color,
       from_square: from,
       to_square: to,
@@ -805,6 +830,10 @@ export function makeChessMove(requestJson) {
       created_at: now
     }
     storage.set(MOVES_TABLE, moveRecord)
+    storage.set(GAMES_TABLE, updatedGame)
+    system.log(
+      `chesswasm: committed move ${gameId} ${actionId} version ${updatedGame.state_version}`
+    )
     publishGame(updatedGame, 'move')
     return {
       game: publicGame(updatedGame),
@@ -827,7 +856,7 @@ export function resignChessGame(requestJson) {
     const winner = playerFromGameByColor(game, winnerColor)
     if (!winner) throw new Error('Opponent is missing.')
     const now = system.now()
-    const updatedGame = {
+    const updatedGame = versionedGame(game, {
       ...game,
       status: 'completed',
       winner_color: winnerColor,
@@ -836,7 +865,7 @@ export function resignChessGame(requestJson) {
       payout_status: 'pending',
       updated_at: now,
       completed_at: now
-    }
+    })
     storage.set(GAMES_TABLE, updatedGame)
     publishGame(updatedGame, 'resigned')
     return {
@@ -888,14 +917,14 @@ export function settleChessGame(requestJson) {
 }
 
 function settleChessPayout(game, event) {
-  const processingGame = {
+  const processingGame = versionedGame(game, {
     ...game,
     status: 'completed',
     payout_pending: true,
     payout_status: 'processing',
     updated_at: system.now(),
     completed_at: game.completed_at || system.now()
-  }
+  })
   storage.set(GAMES_TABLE, processingGame)
 
   const settings = getSettingsById(processingGame.settings_id)
@@ -912,12 +941,12 @@ function settleChessPayout(game, event) {
   } catch (error) {
     payout = {ok: false, error: errorMessage(error)}
   }
-  const updatedGame = {
+  const updatedGame = versionedGame(processingGame, {
     ...processingGame,
     payout_pending: !payout.ok,
     payout_status: payout.ok ? 'paid' : 'failed',
     updated_at: system.now()
-  }
+  })
   storage.set(GAMES_TABLE, updatedGame)
   publishGame(updatedGame, event)
   return {game: updatedGame, payout}
@@ -1003,6 +1032,18 @@ function getGame(gameId) {
   return game
 }
 
+function gameStateVersion(game) {
+  return Math.max(0, Number(game.state_version || 0))
+}
+
+function versionedGame(game, updatedGame) {
+  return {
+    ...updatedGame,
+    state_version: gameStateVersion(game) + 1,
+    last_action_id: updatedGame.last_action_id || game.last_action_id || ''
+  }
+}
+
 function getPublicGame(gameId) {
   const game = storage.getPublic(GAMES_TABLE, gameId, null)
   if (!game) throw new Error('Chess game not found.')
@@ -1069,6 +1110,73 @@ function publicPlayersFromGame(game) {
 
 function publicMovesForGame(game) {
   return publicMovesFromPgn(game, 20)
+}
+
+function moveForAction(gameId, actionId) {
+  return storage.getPaginated(MOVES_TABLE, {
+    filters: {game_id: gameId, action_id: actionId},
+    sortBy: 'move_number',
+    descending: false,
+    limit: 1,
+    offset: 0
+  }).data[0] || null
+}
+
+function idempotentMoveResult(game, player, move, request) {
+  if (
+    move.color !== player.color ||
+    move.from_square !== request.from ||
+    move.to_square !== request.to ||
+    (move.promotion || '') !== request.promotion
+  ) {
+    throw new Error('That move action ID was already used for a different move.')
+  }
+  const reconciledGame = reconcileMove(game, player, move)
+  return {
+    game: publicGame(reconciledGame),
+    move: publicMove(move),
+    player: publicPlayer(player, true),
+    payout: {ok: true, pending: reconciledGame.payout_pending === true},
+    idempotent: true
+  }
+}
+
+function reconcileMove(game, player, move) {
+  if (game.last_action_id === move.action_id) return game
+  const moveNumber = Number(move.move_number || 0)
+  if (moveNumber !== Number(game.move_count || 0) + 1) {
+    throw new Error('That move was superseded by newer game state. Refresh the game.')
+  }
+  const moveVersion = Math.max(
+    gameStateVersion(game) + 1,
+    Number(move.state_version || 0)
+  )
+  const status = move.game_status || 'active'
+  const winnerColor = move.winner_color || ''
+  const completed = status === 'completed' || status === 'draw'
+  const reconciledGame = {
+    ...game,
+    status,
+    winner_color: winnerColor,
+    winner_ln_address: winnerColor ? player.ln_address : '',
+    payout_pending: winnerColor !== '',
+    payout_status: winnerColor ? 'pending' : '',
+    fen: move.fen,
+    pgn: appendPgn(game.pgn, moveNumber, move.color, move.san),
+    turn: move.next_turn || (move.color === 'white' ? 'black' : 'white'),
+    move_count: moveNumber,
+    state_version: moveVersion,
+    last_action_id: move.action_id,
+    updated_at: move.created_at,
+    completed_at: completed ? move.created_at : null
+  }
+  storage.set(GAMES_TABLE, reconciledGame)
+  system.log(
+    `chesswasm: recovered move ${game.id} ${move.action_id} version ${moveVersion}`,
+    'warning'
+  )
+  publishGame(reconciledGame, 'move')
+  return reconciledGame
 }
 
 function publicMovesFromPgn(game, limit = 20) {
@@ -1230,6 +1338,8 @@ function publicGame(game) {
     pgn: game.pgn || '',
     turn: game.turn || 'white',
     moveCount: Number(game.move_count || 0),
+    stateVersion: gameStateVersion(game),
+    lastActionId: game.last_action_id || '',
     createdAt: Number(game.created_at || 0),
     updatedAt: Number(game.updated_at || 0),
     startedAt: Number(game.started_at || 0),
@@ -1254,6 +1364,7 @@ function publicMove(move) {
     id: move.id,
     gameId: move.game_id,
     moveNumber: Number(move.move_number || 0),
+    actionId: move.action_id || '',
     color: move.color,
     from: move.from_square,
     to: move.to_square,
@@ -1621,6 +1732,20 @@ function normalizePromotion(value) {
   if (!promotion) return ''
   if (!['q', 'r', 'b', 'n'].includes(promotion)) throw new Error('Invalid promotion piece.')
   return promotion
+}
+
+function normalizeActionId(value) {
+  if (typeof value !== 'string') return ''
+  return value.trim().replace(/[^a-zA-Z0-9:_-]/g, '').slice(0, 96)
+}
+
+function optionalStateVersion(value) {
+  if (value === undefined || value === null || value === '') return null
+  const version = Number(value)
+  if (!Number.isInteger(version) || version < 0) {
+    throw new Error('expectedStateVersion must be a non-negative integer.')
+  }
+  return version
 }
 
 function eventPaymentHash(event) {

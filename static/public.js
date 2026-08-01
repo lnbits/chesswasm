@@ -16,6 +16,7 @@ const state = {
   refreshTimer: null,
   rendering: false,
   renderAgain: false,
+  movePending: false,
   notifiedStartAt: 0,
   notifiedCheckMove: 0,
   notifiedGameOverMove: 0
@@ -220,7 +221,7 @@ async function onSquareClick(square, piece) {
     state.suppressClick = false
     return
   }
-  if (!state.game || state.game.status !== 'active' || !state.player) return
+  if (state.movePending || !state.game || state.game.status !== 'active' || !state.player) return
   if (state.game.turn !== state.player.color) return
   if (!state.selectedSquare) {
     if (!piece || pieceColor(piece) !== state.player.color) return
@@ -330,21 +331,91 @@ async function finishDragMove(from, to) {
 }
 
 async function submitMove(from, to) {
+  if (state.movePending) return
+  const action = {
+    actionId: newActionId('move'),
+    expectedStateVersion: Number(state.game?.stateVersion || 0),
+    expectedMoveCount: Number(state.game?.moveCount || 0),
+    from,
+    to,
+    promotion: promotionForMove(from, to)
+  }
+  state.movePending = true
+  renderBoard(state.game.fen, state.player.color)
+  let result = null
   try {
-    const promotion = promotionForMove(from, to)
-    const result = await client.makeMove(state.gameId, {
-      playerToken: playerToken(),
-      from,
-      to,
-      promotion
-    })
+    result = await makeMoveWithRecovery(action)
     await settleCompletedGame(result)
     await renderGame()
+    if (!moveWasAccepted(action, result)) {
+      throw new Error('The move response did not match the refreshed game state.')
+    }
     if (state.game?.status === 'completed') showConfetti()
   } catch (error) {
-    await renderGame()
-    showError(error)
+    try {
+      await renderGame()
+    } catch (refreshError) {
+      console.warn('[chesswasm public] move recovery refresh failed', refreshError)
+    }
+    if (moveWasAccepted(action, result)) {
+      notifyInfo('Move accepted; game state was recovered after a response error.', 'positive')
+    } else {
+      showError(error)
+    }
+  } finally {
+    state.movePending = false
+    renderBoard(state.game.fen, state.player.color)
   }
+}
+
+async function makeMoveWithRecovery(action) {
+  const payload = {
+    playerToken: playerToken(),
+    from: action.from,
+    to: action.to,
+    promotion: action.promotion,
+    actionId: action.actionId,
+    expectedStateVersion: action.expectedStateVersion
+  }
+  try {
+    return await client.makeMove(state.gameId, payload)
+  } catch (error) {
+    try {
+      await renderGame()
+    } catch (refreshError) {
+      console.warn('[chesswasm public] pre-retry refresh failed', refreshError)
+    }
+    if (moveWasAccepted(action)) {
+      return {game: state.game, recovered: true}
+    }
+    if (
+      Number(state.game?.stateVersion || 0) !== action.expectedStateVersion ||
+      !canMoveIgnoringPending()
+    ) {
+      throw error
+    }
+    return client.makeMove(state.gameId, payload)
+  }
+}
+
+function moveWasAccepted(action, result = null) {
+  if (result?.move?.actionId === action.actionId) return true
+  if (state.game?.lastActionId === action.actionId) return true
+  if (Number(state.game?.moveCount || 0) <= action.expectedMoveCount) return false
+  const moves = String(state.game?.pgn || '')
+    .split(/\s+/)
+    .filter(token => token && !/^\d+\.$/.test(token))
+  const committed = moves[action.expectedMoveCount] || ''
+  return committed.startsWith(`${action.from}${action.to}${action.promotion}`)
+}
+
+function canMoveIgnoringPending() {
+  return !!(
+    state.game &&
+    state.game.status === 'active' &&
+    state.player &&
+    state.game.turn === state.player.color
+  )
 }
 
 async function settleCompletedGame(result) {
@@ -361,7 +432,7 @@ async function settleCompletedGame(result) {
 }
 
 function canMovePiece(piece) {
-  if (!state.game || state.game.status !== 'active' || !state.player) return false
+  if (state.movePending || !state.game || state.game.status !== 'active' || !state.player) return false
   return state.game.turn === state.player.color && pieceColor(piece) === state.player.color
 }
 
@@ -904,6 +975,12 @@ function playerToken() {
   if (state.playerToken) return state.playerToken
   state.playerToken = tokenFromUrl()
   return state.playerToken
+}
+
+function newActionId(prefix) {
+  const id = window.crypto?.randomUUID?.()
+  if (id) return `${prefix}:${id}`
+  return `${prefix}:${Date.now()}:${Math.random().toString(36).slice(2)}`
 }
 
 function tokenFromUrl() {

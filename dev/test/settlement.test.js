@@ -10,6 +10,17 @@ const storage = {
   get(table, id, fallback) {
     return rows.get(`${table}:${id}`) || fallback
   },
+  getPaginated(table, options = {}) {
+    const data = [...rows.entries()]
+      .filter(([key, value]) =>
+        key.startsWith(`${table}:`) &&
+        Object.entries(options.filters || {}).every(
+          ([field, expected]) => value[field] === expected
+        )
+      )
+      .map(([, value]) => value)
+    return {data, total: data.length}
+  },
   set(table, row) {
     rows.set(`${table}:${row.id}`, row)
   }

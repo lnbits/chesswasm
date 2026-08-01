@@ -1,7 +1,3 @@
-:root {
-  color-scheme: dark;
-}
-
 * {
   box-sizing: border-box;
 }
@@ -13,9 +9,17 @@ body {
 }
 
 body {
-  background: #111318;
+  background: transparent;
   color: white;
   letter-spacing: 0;
+}
+
+body.body--dark {
+  background: transparent;
+}
+
+body.chess-body {
+  background: #111318;
 }
 
 [v-cloak],
