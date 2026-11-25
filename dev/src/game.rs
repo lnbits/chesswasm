@@ -1,52 +1,85 @@
 use crate::board::{Board, Square, START_FEN};
 use crate::notation::{append_pgn, clean};
 
-#[derive(Default)]
-pub struct Game {
-    pub id: String,
-    pub settings_id: String,
-    pub wallet_id: String,
-    pub name: String,
-    pub join_amount: u64,
-    pub haircut: f64,
-    pub players_count: u32,
-    pub status: String,
-    pub white_ln_address: String,
-    pub black_ln_address: String,
-    pub white_payment_hash: String,
-    pub black_payment_hash: String,
-    pub winner_color: String,
-    pub winner_ln_address: String,
-    pub payout_pending: bool,
-    pub payout_status: String,
-    pub fen: String,
-    pub pgn: String,
-    pub turn: String,
-    pub move_count: u64,
-    pub state_version: u64,
-    pub last_action_id: String,
-    pub created_at: u64,
-    pub updated_at: u64,
-    pub started_at: Option<u64>,
-    pub completed_at: Option<u64>,
+// Keep the SQL row field names and Rust types in one place. Older rows and
+// public storage projections can omit fields introduced by later migrations.
+macro_rules! stored_row {
+    (pub struct $name:ident { $(pub $field:ident: $ty:ty,)* }) => {
+        #[derive(Default)]
+        pub struct $name { $(pub $field: $ty,)* }
+
+        impl $name {
+            pub fn from_row(row: serde_json::Value) -> Result<Self, String> {
+                let serde_json::Value::Object(mut fields) = row else {
+                    return Err("Invalid stored chess record.".into());
+                };
+                Ok(Self {
+                    $($field: match fields.remove(stringify!($field)) {
+                        None | Some(serde_json::Value::Null) => Default::default(),
+                        Some(value) => serde_json::from_value(value)
+                            .map_err(|_| concat!("Invalid stored field: ", stringify!($field)))?,
+                    },)*
+                })
+            }
+
+            pub fn row(&self) -> serde_json::Value {
+                let mut fields = serde_json::Map::new();
+                $(fields.insert(stringify!($field).into(), serde_json::json!(self.$field));)*
+                serde_json::Value::Object(fields)
+            }
+        }
+    };
 }
 
-pub struct Move {
-    pub id: String,
-    pub game_id: String,
-    pub move_number: u64,
-    pub action_id: String,
-    pub state_version: u64,
-    pub game_status: String,
-    pub next_turn: String,
-    pub winner_color: String,
-    pub color: String,
-    pub from_square: String,
-    pub to_square: String,
-    pub promotion: String,
-    pub san: String,
-    pub fen: String,
-    pub created_at: u64,
+stored_row! {
+    pub struct Game {
+        pub id: String,
+        pub settings_id: String,
+        pub wallet_id: String,
+        pub name: String,
+        pub join_amount: u64,
+        pub haircut: f64,
+        pub players_count: u32,
+        pub status: String,
+        pub white_ln_address: String,
+        pub black_ln_address: String,
+        pub white_payment_hash: String,
+        pub black_payment_hash: String,
+        pub winner_color: String,
+        pub winner_ln_address: String,
+        pub payout_pending: bool,
+        pub payout_status: String,
+        pub fen: String,
+        pub pgn: String,
+        pub turn: String,
+        pub move_count: u64,
+        pub state_version: u64,
+        pub last_action_id: String,
+        pub created_at: u64,
+        pub updated_at: u64,
+        pub started_at: Option<u64>,
+        pub completed_at: Option<u64>,
+    }
+}
+
+stored_row! {
+    pub struct Move {
+        pub id: String,
+        pub game_id: String,
+        pub move_number: u64,
+        pub action_id: String,
+        pub state_version: u64,
+        pub game_status: String,
+        pub next_turn: String,
+        pub winner_color: String,
+        pub color: String,
+        pub from_square: String,
+        pub to_square: String,
+        pub promotion: String,
+        pub san: String,
+        pub fen: String,
+        pub created_at: u64,
+    }
 }
 
 pub struct MoveRequest {

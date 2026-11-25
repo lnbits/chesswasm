@@ -8,7 +8,7 @@ impl Square {
     pub fn parse(name: &str) -> Result<Self, &'static str> {
         match name.as_bytes() {
             [file @ b'a'..=b'h', rank @ b'1'..=b'8'] => {
-                Ok(Self(usize::from((rank - b'1') * 8 + file - b'a')))
+                Ok(Self(usize::from((rank - b'1') * 8 + (file - b'a'))))
             }
             _ => Err("A valid chess square is required."),
         }
