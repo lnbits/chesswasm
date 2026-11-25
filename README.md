@@ -56,14 +56,19 @@ promotion to queen by default, and en passant. Castling is not implemented yet.
 
 ## Build
 
-From this extension's development directory:
+The server component is written in Rust. From the extension checkout, install
+the Rust WASI target and build the release component with the locked dependencies.
 
 ```bash
-cd lnbits/extensions/chesswasm/dev
+cd dev
+rustup target add wasm32-wasip2
 npm run build:wasm
 ```
 
-The build writes the installable component to `../wasm/module.wasm`.
+The build writes the installable component to `../wasm/module.wasm`. Run
+`npm run check` from the same directory with the LNbits Python environment
+active. This runs Rust unit tests, browser JavaScript checks and guest tests
+against the packaged component using LNbits’ Wasmtime runtime and mock wallets.
 
 Static UI changes in `static/` do not require a WASM rebuild, but LNbits or the
 browser may need a hard refresh to pick up changed assets.
